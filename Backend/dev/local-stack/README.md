@@ -2383,6 +2383,66 @@ account verification, whose document list Chargily does not publish, and
 realistically a domain we own: the current hostname contains the VPS's own IP
 address, so it dies the day the box moves.
 
+## Account deletion — `account-deletion.sql`, `maps-shim/deletion.js`
+
+Google Play rejects an app that lets people create an account and gives them no
+way inside it to ask for that account to be deleted. A web page is not enough;
+it wants both, and it checks every kind of account the app offers.
+
+**The deployed backend cannot delete an account.** Not "does it badly" — the
+route does not exist. Checked *inside the container*, against both running
+binaries: `deleteAccount`, `deleteProfile` and `account/delete` all return zero.
+So the request is **recorded** and a person carries it out from the admin site,
+which is what the client asked for. Every screen in the app says *demande
+enregistrée*, never *compte supprimé*, and `verify-apk.py` fails a build that
+contains the latter — the account still signs in while that screen is on the
+display, and saying otherwise would be a lie we chose rather than a bug we
+missed.
+
+    docker cp account-deletion.sql ny-postgres:/tmp/
+    docker exec ny-postgres psql -U postgres -d atlas_dev -f /tmp/account-deletion.sql
+    scp maps-shim/deletion.js maps-shim/server.js ny:/opt/ny/local-stack/maps-shim/
+    ssh ny 'cd /opt/ny/local-stack && docker compose restart maps-shim'
+
+One route, three methods, and it takes **no id at all**:
+
+    GET    /account/deletion-request   what screen 21 draws when it opens
+    POST   /account/deletion-request   record it
+    DELETE /account/deletion-request   withdraw it
+
+The caller sends a token and nothing else; the shim asks the backend whose it
+is. There is no request shape here that could delete somebody else's account,
+because there is nowhere to put their id. Same rule as `subscription.js` and the
+avatar fix.
+
+**Three decisions worth keeping.**
+
+*The in-ride check is written backwards.* It asks whether a ride is **not**
+`COMPLETED` or `CANCELLED`, rather than listing the in-flight statuses. Only
+terminal statuses exist in our data, so enumerating the active ones is
+guesswork — and a guess that misses one produces a check that never fires,
+which is worse than no check because it looks like one. Written this way an
+unknown status refuses the deletion, which is the safe direction. A check that
+throws returns `true` as well, rather than silently allowing what it guards.
+
+*One open request per account is a partial unique index*, so two taps on a slow
+connection cannot both insert and the app's "already requested" state is a fact
+rather than a race.
+
+*A withdrawal marks the row `withdrawn`, it does not delete it.* The office
+should be able to see that somebody asked and changed their mind.
+
+`movin.deletion_queue` is the view the admin site reads: the open requests,
+oldest first, with `days_left` and an `overdue` flag already computed.
+
+nginx gets an **exact-path** location rather than an `/account/` prefix, on the
+`auth` rate-limit zone. Nobody does this dozens of times a minute, and a flood
+here would be somebody guessing a token rather than an app behaving badly.
+
+Proved end to end by `./probe-account-deletion.py`, 17/17 on 2026-08-30: none →
+request → pending → 409 on a second → withdraw → none → and she can ask again,
+with the row kept as history and the date not moving between reads.
+
 ## The domain — `./switch-domain.sh`
 
 The API answers on `api.169-58-139-65.sslip.io`, a hostname containing the
@@ -2522,6 +2582,28 @@ rider-app has migrated.
 
 - **This is the 2023 baseline, not current `main`.** Running today's backend
   would need a full Haskell build *and* merchant config we don't have.
+- **The rider's cancellation reasons are still in English.** Measured
+  2026-08-30: `atlas_driver_offer_bpp.cancellation_reason` carries six French
+  reasons, and `atlas_app.cancellation_reason` carries seven of upstream's —
+  *"My fare was too high."*, *"ETA was too long."* A passenger picking a reason
+  reads them. One SQL statement, nothing else.
+- **Two cancellation codes are stored that no list contains.**
+  `CHANGE_OF_PLANS` (3 rows, rider side) and `PASSENGER_CANCELLED_ON_SITE` (1
+  row, driver side). The app sends them; the seeded tables do not know them.
+  Anything joining reasons to their labels renders an empty cell for those, and
+  an empty cell reads as *no reason given* when one was.
+- **A driver rating a passenger stores no row and no comment.**
+  `rateCustomer(rideId, stars)` writes only an average, a count and a running
+  sum onto `rider_details` — so there is no history to list, nothing to read
+  back per ride, and **a second POST for the same ride counts twice**. The app
+  disables its control the moment one succeeds; anything else calling that
+  route must do the same. Passenger→driver is the opposite: a row each, with
+  the tags and a written comment below three stars.
+- **Nothing uploads a driver's papers.** `DOCUMENT_UPLOAD_URL` in the app is
+  `null`, so the licence and the carte grise stay on the phone that
+  photographed them and the enrolment screens say so plainly. The admin site is
+  the missing half — see `movin.deletion_request` for the shape that half takes
+  when it is built.
 - ~~`GET /v2/profile` returns 500~~ — **no longer true, and probably has not
   been for a while.** Measured 2026-08-17: it answers `200` with the name and a
   *masked* number (`055...188`). Screen 16 reads it. Left here struck through
@@ -2572,6 +2654,9 @@ driver-subscription.sql  the movin schema: who has paid, and every payment.
 driver-subscription-free-month.sql  one free month for the fleet already on
                        the road.  Cannot double-give, and writes no payment —
                        so `active` with no receipt means exactly "offered"
+account-deletion.sql   movin.deletion_request and the queue view the admin
+                       site reads.  Nothing here deletes an account: the
+                       backend has no route for it, so a person does it
 
   prepare steps, each run once and slow
 osrm-prepare.sh        builds the routing graph from algeria-latest.osm.pbf
@@ -2595,6 +2680,14 @@ apply-search-window.sh how long a driver has to answer.  A Dhall value, so it is
 
   measuring, not running — each records its results in its own header
 probe-booking-flow.py     a whole ride from both sides
+probe-account-deletion.py the deletion cycle with a real token: none →
+                          pending → 409 → withdrawn → askable again
+probe-cost-per-request.py what one request costs the machine, in CPU.  The
+                          input to every capacity claim about this box
+probe-storage-cost.py     what a completed ride costs on disk, weighed
+probe-service-time.py     how long each operation takes, one at a time
+probe-load.py             the concurrency ladder.  NEVER RUN — it
+                          deliberately saturates the machine
 probe-booking-timeouts.py how long a search really lives
 probe-unused-routes.py    what the rider API can serve that we don't use
 probe-rider-extras.py     do the useful unused routes actually work?
@@ -2638,6 +2731,9 @@ maps-shim/             Google Places/geocoding, answered from Postgres —
                        that ever extends a subscription
   restricted.js        publishes who dispatch should skip.  The binary reads
                        one Redis key and never learns what a subscription is
+  deletion.js          /account/deletion-request — records a request and
+                       refuses one mid-ride.  Takes no id: the token says
+                       who is asking
 geocoder/              place-index build;  places.csv gitignored
 demo-map/              the map on :8025 (nginx conf + page)
   site/areas.geojson   exported from the DB by setup.sh (gitignored)
