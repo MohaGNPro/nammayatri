@@ -26,6 +26,7 @@ const rating = require('./rating');
 const subscription = require('./subscription');
 const identity = require('./identity');
 const restricted = require('./restricted');
+const deletion = require('./deletion');
 
 const PORT           = Number(process.env.PORT || 8020);
 const OSRM_URL       = (process.env.OSRM_URL || 'http://localhost:5000').replace(/\/$/, '');
@@ -465,6 +466,45 @@ http.createServer((req, res) => {
       return subscription.checkoutState(pool, token, decodeURIComponent(rest.join('/')), res);
     }
     return send(res, 404, { error: 'no such subscription route' });
+  }
+
+  // Account deletion requests. Google Play requires the path to exist INSIDE
+  // the app, and the deployed backend has no deletion route of any kind, so
+  // the request is recorded here and an administrator carries it out.
+  //
+  // Nothing under this path deletes anything. See deletion.js.
+  //
+  //   GET    /account/deletion-request   what screen 21 draws when it opens
+  //   POST   /account/deletion-request   record it
+  //   DELETE /account/deletion-request   withdraw it
+  if (url.pathname === '/account/deletion-request') {
+    const token = req.headers.token || '';
+    const backends = { RIDER_URL, DRIVER_URL };
+
+    if (req.method === 'GET') return deletion.status(pool, backends, token, res);
+    if (req.method === 'DELETE') return deletion.withdraw(pool, backends, token, res);
+    if (req.method === 'POST') {
+      // Small and ours, so it is read and parsed here rather than streamed:
+      // unlike the Chargily webhook there is no signature over the raw bytes.
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+        if (raw.length > 4096) req.destroy();
+      });
+      req.on('end', () => {
+        let body = {};
+        try {
+          body = raw ? JSON.parse(raw) : {};
+        } catch {
+          // A malformed body costs the reason, not the request. Somebody
+          // leaving should not be stopped by a field that is optional anyway.
+          body = {};
+        }
+        void deletion.request(pool, backends, token, body, res);
+      });
+      return undefined;
+    }
+    return send(res, 405, { error: 'method not allowed' });
   }
 
   // Profile photographs. Nothing to do with Google either -- see avatars.js for
