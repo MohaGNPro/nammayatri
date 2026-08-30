@@ -2599,6 +2599,24 @@ rider-app has migrated.
   disables its control the moment one succeeds; anything else calling that
   route must do the same. Passenger→driver is the opposite: a row each, with
   the tags and a written comment below three stars.
+- **The agency cannot write to a driver, and if it could he would not see it.**
+  Two separate failures, and only the second is ours to fix.
+  `atlas_driver_offer_bpp.message`, `message_translation` and `message_report`
+  all exist and have been **empty since this stack existed** — upstream fills
+  them from a dashboard we do not run, so nothing writes them today. That half
+  is straightforward: a message is one row in `message` plus **one row per
+  driver** in `message_report`, and the per-driver row is what makes "who read
+  it" answerable at all. The other half is not: **`GET /ui/message/list`
+  answers `500` the moment it has a row to return.** Empty it answers
+  `200 []`. Measured 2026-08-24 both ways round, with a French translation,
+  with an English one, with the driver's `language` set and null, and with no
+  attachment — always 500, with no detail on the wire; the reason exists only
+  in the container log. `probe-agency-messages.py` walks the row up one field
+  at a time to find out which column, and **has never been run**. Until it is,
+  an admin site can record a message and the driver will never be shown it.
+  Related: a "new message" push would be **silent**, because the app writes the
+  French words itself and drops a notification type it does not recognise —
+  one line in the app, not a backend change.
 - **Nothing uploads a driver's papers.** `DOCUMENT_UPLOAD_URL` in the app is
   `null`, so the licence and the carte grise stay on the phone that
   photographed them and the enrolment screens say so plainly. The admin site is
@@ -2688,6 +2706,9 @@ probe-storage-cost.py     what a completed ride costs on disk, weighed
 probe-service-time.py     how long each operation takes, one at a time
 probe-load.py             the concurrency ladder.  NEVER RUN — it
                           deliberately saturates the machine
+probe-agency-messages.py  why /ui/message/list answers 500 as soon as it has a
+                          row.  Walks the row up one field at a time and reads
+                          the container log after each.  NOT YET RUN
 probe-booking-timeouts.py how long a search really lives
 probe-unused-routes.py    what the rider API can serve that we don't use
 probe-rider-extras.py     do the useful unused routes actually work?
