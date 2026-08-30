@@ -2518,10 +2518,34 @@ archive, and a restore is only meaningful with both.
 | `atlas_app` | 3.9 MB | **yes** — riders, bookings, rides |
 | `atlas_driver_offer_bpp` | 3.6 MB | **yes** — drivers, fares, the BPP side |
 | `atlas_registry` | 40 kB | **yes** |
+| `movin` | small | **yes** — subscriptions, receipts, deletion requests |
 
 An include list has one failure mode: a schema added later is left out silently.
 So the script **refuses to run if the schema set has changed**, and says which
 one is new. That guard earned itself on its first run by catching `tiger_data`.
+
+#### It earned itself a second time, and the second time is the useful lesson
+
+`movin` was created on **26 August**. From the 27th the backup **refused to run
+every night**, exited 1, and printed exactly which schema was new. That is the
+guard doing its job perfectly — it chose no backup over a backup silently
+missing the subscription payments.
+
+Nobody read it. Found on **30 August** while checking something else: four
+consecutive nights with no backup, the newest archive four days old, locally
+and on Drive. Fixed by adding `movin` to `DATA_SCHEMAS`; a manual run then
+produced `movin-20260830T150531Z.tar.gz.gpg`, 3.5 MB, copied offsite, and the
+gap is closed.
+
+Two habits come out of it, and they are worth more than the one-line fix:
+
+- **A schema added to this database is not finished until it is named in
+  `DATA_SCHEMAS` or `REBUILDABLE_SCHEMAS`.** Adding it is part of the migration,
+  not a follow-up.
+- **A failure nobody is told about is a failure that continues.** After any
+  schema change, run `systemctl status movin-backup.service`. Better still,
+  give the unit an `OnFailure=` that actually speaks — the timer will otherwise
+  keep failing politely for as long as you let it.
 
 ### Setting it up
 

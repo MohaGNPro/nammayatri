@@ -63,7 +63,22 @@ KEEP_WEEKLY="${KEEP_WEEKLY:-4}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-}"
 
 # The schemas this script was written for. Anything else is a stop, not a guess.
-DATA_SCHEMAS="atlas_app atlas_driver_offer_bpp atlas_registry"
+#
+# `movin` is ours: driver subscriptions, the Chargily receipts, and the account
+# deletion requests. None of it is rebuildable and none of it exists anywhere
+# else, so it is data.
+#
+# It was added on 2026-08-30, four days late, and the delay is the whole reason
+# this guard exists. `movin` was created on 26 August; from the 27th the backup
+# refused to run and said exactly why, every night, in the journal -- and
+# nobody read the journal. So the guard worked and the habit did not. Two
+# things follow, and they are worth more than this line:
+#
+#   * a schema added to this database is not finished until it is named here;
+#   * a backup nobody is told about failing is a backup that has stopped.
+#     `systemctl status movin-backup.service` after any schema change, or wire
+#     the unit's failure to something that speaks.
+DATA_SCHEMAS="atlas_app atlas_driver_offer_bpp atlas_registry movin"
 # `tiger_data` was found by this guard on its first run, which is the argument
 # for having it: it is PostGIS's TIGER geocoder data, nothing to do with us, and
 # it would have been just as invisible if it had been a schema that mattered.
