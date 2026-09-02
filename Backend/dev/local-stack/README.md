@@ -657,6 +657,35 @@ client 2026-08-24, along with the table above so he can name an increase rather
 than guess at one. It is pure SQL — `fare_policy` is already one row per variant
 and `apply-tariff.sh` applies it — so **no rebuild**.
 
+### What the rider is shown, and what he can be charged
+
+The estimate is **the floor, not the price**, and the app shows only the floor.
+Measured on `atlas_app.estimate`, twelve real quotes:
+
+| Variant | Estimate | Ceiling | Gap |
+|---|---|---|---|
+| `SEDAN` | 761 | 1046 | 285 |
+| `SEDAN` | 768 | 1053 | 285 |
+| `SUV` | 1026 | 1311 | 285 |
+| `HATCHBACK` | 617 | 902 | 285 |
+| `AUTO_RICKSHAW` | 574 | 859 | 285 |
+
+The gap is **285 on every row**, whatever the distance and whatever the
+vehicle, so it is a flat additive cap rather than anything proportional. The
+configured bound is `fare_policy.driver_max_extra_fee = 300` for all four
+variants, with `driver_min_extra_fee = 0` — the 15 DZD between 285 and 300 is
+not yet traced, and until it is, **300 is the number to print**: it is the
+bound the driver cannot exceed, so quoting it never promises less than the
+truth.
+
+Nobody is surprised by a bill — the driver's actual offer reaches the passenger
+*before* he accepts, and he can refuse it. But between pressing *Commander* and
+that offer arriving he sees one number and the sentence "Le chauffeur peut
+ajouter un supplément", which does not say how much. The app used to show
+`258–278` on the deleted prices screen; the range left with that screen on
+2026-08-24, at the client's request, and the ceiling has grown from 20 DZD to
+285 since. Raised with the client 2026-09-02.
+
 **Both merchants carry identical rows**, checked the same day. That matters
 because a tariff applied to one leaves half the fleet quoting the old price;
 see the two-merchant note below.
@@ -1353,6 +1382,41 @@ unreachable from an unapproved account.
 Their personal codes are **not written here**: the guard keeps a salted hash and
 prints a code once, and this file is in git. `./enrol-driver.sh --list` shows
 who is enrolled; `--set <number> <code>` sets a new one.
+
+### The server does not join a driver's name, and it was blamed for doing so
+
+`POST /ui/driver/profile` takes `firstName`, `middleName` and `lastName` and
+writes the three columns separately — `updateDriver` assigns
+`firstName = fromMaybe person.firstName req.firstName` and nothing composes
+them. Worth writing down because the opposite was the obvious explanation for
+this, measured 2026-09-02 across every driver ever enrolled from a handset:
+
+```
+first_name    last_name
+Moha Gefl     Gefl        <- filled both ways
+Test Test     Test        <- filled both ways
+Mohamed       Gn          <- filled as intended
+Moha          Gb          <- filled as intended
+```
+
+Each row is exactly what was typed. The app asks for the name in two boxes
+under a heading reading *Votre nom*, with the second marked *Facultatif*, and
+half the people who met it wrote the whole name in the first box and the
+surname in the second. Everything downstream then joined the two columns — the
+app's dossier and profile, and the agency console, which joins the same two —
+and printed **Moha Gefl Gefl**.
+
+Fixed on both sides by making the join idempotent (a surname the first name
+already carries is not added again) and by stripping the repetition on the way
+in, so no new row is written in that shape. The two rows above are still wrong
+in the database; they are test profiles and both sides display them correctly
+without being touched.
+
+The lesson is the cheap one: **four rows of real data answered this, and a
+probe would have taken longer and told us less.** The temptation was to POST a
+known pair and read it back, which measures the server — and the server was
+never the thing in doubt once the rows were read as *typed input* rather than
+as output.
 
 To approve a driver the way the agency does — both switches, plus the vehicle
 that dispatch actually matches on:
@@ -2733,6 +2797,10 @@ probe-load.py             the concurrency ladder.  NEVER RUN — it
 probe-agency-messages.py  why /ui/message/list answers 500 as soon as it has a
                           row.  Walks the row up one field at a time and reads
                           the container log after each.  NOT YET RUN
+probe-multipart.py        does the server accept the exact multipart envelope
+                          the app builds by hand?  Written because the first
+                          upload attempt threw before a byte left the phone
+                          and shipping a second guess would have been worse
 probe-booking-timeouts.py how long a search really lives
 probe-unused-routes.py    what the rider API can serve that we don't use
 probe-rider-extras.py     do the useful unused routes actually work?
