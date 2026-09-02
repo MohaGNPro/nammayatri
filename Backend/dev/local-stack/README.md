@@ -680,11 +680,20 @@ truth.
 
 Nobody is surprised by a bill — the driver's actual offer reaches the passenger
 *before* he accepts, and he can refuse it. But between pressing *Commander* and
-that offer arriving he sees one number and the sentence "Le chauffeur peut
-ajouter un supplément", which does not say how much. The app used to show
-`258–278` on the deleted prices screen; the range left with that screen on
-2026-08-24, at the client's request, and the ceiling has grown from 20 DZD to
-285 since. Raised with the client 2026-09-02.
+that offer arriving he used to see one number and a sentence that did not say
+how much could be added. The range had left with the deleted prices screen on
+2026-08-24, when the ceiling was 20 DZD.
+
+**Raised with the client 2026-09-02, and he chose the range.** The app now
+shows `761–1046 DZD` on the vehicle card, on the order button and on the recap
+while the search runs, with the sentence naming the higher figure as a ceiling.
+It is deliberately *not* shown on the offers header, which is the baseline each
+driver's offer is subtracted from. Frontend `a18bcc0`.
+
+So the 285/300 discrepancy above is now visible to passengers and worth
+tracing: the app prints the server's own `totalFareRange`, so if 285 is a
+rounding artefact rather than the real bound, riders are being quoted a ceiling
+15 DZD below the one the policy allows.
 
 **Both merchants carry identical rows**, checked the same day. That matters
 because a tariff applied to one leaves half the fleet quoting the old price;
