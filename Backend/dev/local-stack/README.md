@@ -670,13 +670,17 @@ Measured on `atlas_app.estimate`, twelve real quotes:
 | `HATCHBACK` | 617 | 902 | 285 |
 | `AUTO_RICKSHAW` | 574 | 859 | 285 |
 
-The gap is **285 on every row**, whatever the distance and whatever the
-vehicle, so it is a flat additive cap rather than anything proportional. The
-configured bound is `fare_policy.driver_max_extra_fee = 300` for all four
-variants, with `driver_min_extra_fee = 0` — the 15 DZD between 285 and 300 is
-not yet traced, and until it is, **300 is the number to print**: it is the
-bound the driver cannot exceed, so quoting it never promises less than the
-truth.
+**The gap is NOT flat, and it was written up here as if it were.** It comes
+from `restricted_extra_fare`, which is keyed on `min_trip_distance` and steps —
+75 at 0 km up to 600 at 30 km on the Algerian tariff. All twelve quotes above
+were similar-length trips and landed in the same 12 000 m band, so the same
+number came back twelve times and a constant was read into it. Twelve samples
+that agree are not twelve independent samples if nothing varied the thing being
+measured.
+
+`fare_policy.driver_max_extra_fee` is a fallback the bands override, which is
+why 300 never appeared: the 12 000 m band is 285. There was no 15 DZD rounding
+artefact to trace.
 
 Nobody is surprised by a bill — the driver's actual offer reaches the passenger
 *before* he accepts, and he can refuse it. But between pressing *Commander* and
