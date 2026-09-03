@@ -63,7 +63,7 @@ from datetime import datetime, timedelta, timezone
 DRIVER_API = "http://localhost:8017"
 OSRM = "http://localhost:5000"
 OTP = "7891"
-CC = "+213"
+CC = "+222"
 
 # How far back to look for a ride this driver should be driving. Longer than
 # any rider takes to choose an offer; shorter than an abandoned ride from a
@@ -87,27 +87,32 @@ RECENT_RIDE_S = 1800
 # from a phone number "Chauffeur", and three identical Chauffeurs on a demo
 # reads as a test rig rather than a service.
 #
-# The plates are the real Algerian format, which the earlier invented ones were
-# not. Three groups, left to right: serial, then category + year of first
-# registration, then the wilaya. `04217 118 16` is a passenger car (1) first
-# registered in 2018, in Alger (16). The wilaya is LAST -- putting it first is
-# what gave the game away on a demo.
+# Mauritanian since 2026-09-03. These are the rows seed-mauritanian-fleet.sh
+# creates and enrols; this file only signs in as them and answers requests.
+#
+# The plates are the real Mauritanian format: four digits, two letters, then
+# the wilaya, and 00 is Nouakchott. **There is no year in a Mauritanian plate**
+# -- the Algerian one carried it in the middle group and the app decoded it,
+# which is why the passenger no longer sees a car's year.
 FLEET = [
-    ("0551234567", "SEDAN",     "Karim",   "Renault", "Symbol",  "White", "04217 118 16"),
-    ("0551234568", "HATCHBACK", "Yacine",  "Renault", "Clio",    "Grey",  "00892 121 16"),
-    ("0551234569", "SUV",       "Sofiane", "Hyundai", "Tucson",  "Black", "03145 123 16"),
-    ("0551234570", "HATCHBACK", "Bilal",   "Peugeot", "208",     "White", "01764 120 16"),
-    ("0551234571", "SEDAN",     "Mehdi",   "Skoda",   "Octavia", "Black", "05038 119 16"),
-    ("0551234572", "SUV",       "Amine",   "Dacia",   "Duster",  "Grey",  "02456 122 16"),
+    ("22100001", "SEDAN",     "Mohamed",    "Toyota",  "Corolla",      "Blanc", "2145 AC 00"),
+    ("22100003", "HATCHBACK", "Cheikh",     "Renault", "Clio",         "Bleu",  "4027 CD 00"),
+    ("22100005", "SUV",       "Moustapha",  "Toyota",  "Land Cruiser", "Blanc", "6248 EL 00"),
+    ("22100004", "HATCHBACK", "Brahim",     "Dacia",   "Sandero",      "Rouge", "5391 DK 00"),
+    ("22100002", "SEDAN",     "Ahmed",      "Hyundai", "Accent",       "Gris",  "3182 BM 00"),
+    ("22100006", "SUV",       "Abdallahi",  "Nissan",  "Patrol",       "Noir",  "7135 FM 00"),
 ]
 
-# Where idle drivers wait: scattered around central Algiers, each several
+# Where idle drivers wait: scattered around central Nouakchott, each several
 # hundred metres from the usual pickup rather than on top of it. Parked exactly
 # on the pickup, the approach leg is zero points and screen 11 has nothing to
 # show -- the driver is simply already there.
+#
+# Parked in Algiers, as these were until 2026-09-03, they are outside the
+# geofence and invisible -- the same silence in a different place.
 BASE = [
-    (36.7601, 3.0530), (36.7495, 3.0668), (36.7573, 3.0641),
-    (36.7548, 3.0498), (36.7629, 3.0612), (36.7472, 3.0575),
+    (18.0902, -15.9615), (18.0812, -15.9548), (18.0871, -15.9663),
+    (18.0838, -15.9502), (18.0925, -15.9571), (18.0790, -15.9628),
 ]
 
 _last_ts = {}
@@ -326,12 +331,12 @@ def status():
                   JOIN atlas_driver_offer_bpp.driver_information di ON di.driver_id=p.id
                   LEFT JOIN atlas_driver_offer_bpp.vehicle v ON v.driver_id=p.id
                   LEFT JOIN atlas_driver_offer_bpp.driver_location dl ON dl.driver_id=p.id
-                 WHERE p.mobile_country_code='+213' AND p.role='DRIVER'
+                 WHERE p.mobile_country_code='+222' AND p.role='DRIVER'
                  ORDER BY v.variant;"""))
     missing = [v for _, v, *_ in FLEET if not pg(
         f"""SELECT 1 FROM atlas_driver_offer_bpp.vehicle v
              JOIN atlas_driver_offer_bpp.person p ON p.id=v.driver_id
-            WHERE v.variant='{v}' AND p.mobile_country_code='+213' LIMIT 1;""")]
+            WHERE v.variant='{v}' AND p.mobile_country_code='+222' LIMIT 1;""")]
     if missing:
         print(f"\n  \033[1;31mno driver for: {', '.join(missing)}\033[0m"
               f"  -- those rows in the app will wait 300s and return nothing")
