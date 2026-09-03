@@ -45,21 +45,37 @@ import json, os, secrets, sys, hashlib, stat
 path, *args = sys.argv[1:]
 
 # The guard keys on `mobileCountryCode + mobileNumber`, exactly as the app sends
-# them. For Algeria that is "+213" and a local number that KEEPS ITS TRUNK ZERO
-# -- 0551234567, not 551234567. The international form is what a European would
-# write and it is what this backend rejects, so normalising it away here would
-# produce a key no sign-in ever matches: enrolment appears to work, the driver
-# is refused, and nothing says why.
-CC = os.environ.get("COUNTRY_CODE", "+213")
+# them, so this has to agree with the app's lib/phone.ts character for
+# character. Disagree and enrolment appears to work, the driver is refused at
+# sign-in, and nothing anywhere says why.
+#
+# Mauritania since 2026-09-03: "+222" and EIGHT digits with NO trunk prefix.
+# Algeria was "+213" and ten digits that KEPT their trunk zero, which is the
+# opposite habit -- so a number carried over from the old list is not merely
+# stale, it is a key that can never match.
+CC = os.environ.get("COUNTRY_CODE", "+222")
+NSN = int(os.environ.get("NSN_LENGTH", "8"))
+CC_DIGITS = CC.lstrip("+")
 
 def key(local):
     d = "".join(c for c in local if c.isdigit())
-    if d.startswith("213"):
-        d = d[3:]
-    if not d.startswith("0"):
-        d = "0" + d
-    if len(d) != 10:
-        sys.exit(f"'{local}' is not an Algerian mobile number (expected 10 digits like 0551234567)")
+    # A pasted international number, with or without a stray zero after the
+    # country code.
+    if d.startswith(CC_DIGITS + "0") and len(d) == len(CC_DIGITS) + 1 + NSN:
+        d = d[len(CC_DIGITS) + 1:]
+    elif d.startswith(CC_DIGITS) and len(d) == len(CC_DIGITS) + NSN:
+        d = d[len(CC_DIGITS):]
+    # No Mauritanian number begins with a zero; typing one is habit from
+    # elsewhere. Dropped rather than refused.
+    d = d.lstrip("0") or d
+    if len(d) != NSN:
+        sys.exit(f"'{local}' is not a Mauritanian mobile number "
+                 f"(expected {NSN} digits like 22334455)")
+    # Mobiles are 2, 3 or 4 and never x5 -- 45 and 25 are fixed ranges. The
+    # guard is the last place to catch this before a code is handed to somebody
+    # whose phone can never receive one.
+    if d[0] not in "234" or d[1] == "5":
+        sys.exit(f"'{local}' is not a mobile range (2, 3 or 4, and not x5)")
     return CC + d
 
 def load():
