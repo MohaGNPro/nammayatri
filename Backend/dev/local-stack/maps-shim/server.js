@@ -213,6 +213,19 @@ const GOOGLE_TYPES = {
 
 const typesFor = (kind) => GOOGLE_TYPES[kind] || ['point_of_interest', 'establishment'];
 
+// The country every address is signed with.
+//
+// Was hardcoded 'Algérie' / 'DZ' in two places until 2026-09-03, when the
+// pilot moved and a pickup in Tevragh Zeina came back as "F-Nord, Algérie" on
+// a map drawing Nouakchott streets. Config now, because this is the second
+// country and there should not be a third code change.
+//
+// The app strips this off the end of a display line before showing it
+// (`locality()` in lib/places.ts), so the two have to agree -- a mismatch does
+// not error, it just leaves the country on screen.
+const COUNTRY_NAME = process.env.COUNTRY_NAME || 'Mauritanie';
+const COUNTRY_CODE = process.env.COUNTRY_CODE || 'MR';
+
 // The one string the rider actually reads. The rider-app's AutoCompleteResp
 // carries a single `description` -- there is no main/secondary pair anywhere in
 // the chain -- so the locality has to be part of it.
@@ -228,12 +241,12 @@ function addressComponents(row) {
   if (row.locality) {
     parts.push({ long_name: row.locality, short_name: row.locality, types: ['locality', 'political'] });
   }
-  parts.push({ long_name: 'Algérie', short_name: 'DZ', types: ['country', 'political'] });
+  parts.push({ long_name: COUNTRY_NAME, short_name: COUNTRY_CODE, types: ['country', 'political'] });
   return parts;
 }
 
 const formatAddress = (row) =>
-  [row.display_name, row.locality, 'Algérie'].filter(Boolean).join(', ');
+  [row.display_name, row.locality, COUNTRY_NAME].filter(Boolean).join(', ');
 
 // "36.7538,3.0588" -> [36.7538, 3.0588]
 function parseLatLng(raw) {
