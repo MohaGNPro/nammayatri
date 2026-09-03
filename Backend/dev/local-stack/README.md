@@ -2660,6 +2660,97 @@ Two traps met while building this, both silent:
   `systemctl start movin-backup.service` and read the journal, the same way the
   certbot timer had to be checked.
 
+## Mauritania — the switch, and the two things that hid in it
+
+The pilot moved from Algeria to Mauritania on **2026-09-03**, replacing it
+rather than running both. Nothing Algerian was deleted: the graph, the tiles,
+the place CSV, the geofence row and the tariff are all still here, and going
+back is a variable and an image swap.
+
+### The five steps, in the order that keeps each one provable
+
+    1. tariff        SQL, reversible, nothing reads it until a search happens
+    2. place index   destroys Algerian search, so it goes before the coverage
+    3. map servers   MAP_COUNTRY=mauritania, files already built beside the old
+    4. coverage      the geofences, plus the caches that hide them
+    5. images        the +222 binaries -- LAST, because after this no Algerian
+                     number can sign in and there is no going back cheaply
+
+`COUNTRY=mauritania` on `osrm-prepare.sh`, `tiles-prepare.sh` and
+`geocoder-prepare.sh`; `MAP_COUNTRY` in the compose. All default to `algeria`.
+
+    mauritania-latest.osm.pbf    29.1 MB   (Algeria: 285 MB)
+    routing graph                16.9 MB
+    tiles                        52.5 MB   (Algeria: 309.6 MB)
+    places indexed               10 005    (Algeria: 111 555)
+
+### THERE ARE TWO SERVICE AREAS
+
+`atlas_app.geometry` + `atlas_app.merchant.origin_restriction` is the **rider's**
+geofence. `atlas_driver_offer_bpp.geometry` + its own **two** merchants is the
+**provider's**, and it is a completely separate set of rows.
+
+Switch only the rider's and the search reaches the BPP, is dropped there, and
+returns no estimate — no error on either side. The provider-side geometry
+column is typed `geometry(MultiPolygon)` where the rider's is untyped, so the
+row is built with `ST_Multi()` from the rider's to guarantee they agree.
+
+Both are cached in Redis (`CachedQueries:Merchant`), so the UPDATE alone
+changes nothing the API says.
+
+### BECKN CANNOT PARSE A NEGATIVE COORDINATE
+
+This is the one worth reading twice, and it had been true since 2023.
+
+    Error in $.message.intent.fulfillment.start.location.gps:
+    (line 1, column 10): unexpected "-" expecting space or float
+
+The gps field travels as a string, `"18.0858, -15.9582"`, and
+`Beckn/Types/Core/Taxi/Common/Gps.hs` read it with Parsec's `P.float`, which is
+**unsigned**. Column 10 is the character straight after `"18.0858, "`.
+
+**Algeria is at +3 longitude, so every coordinate the pilot ever sent was
+positive and this was invisible for its entire life.** Nouakchott is at −15.9
+and no search reached the driver pool at all.
+
+Three things made it expensive to find:
+
+  * **The provider logged nothing.** It answered the gateway 400, which from
+    its own side is correct — it rejected a malformed request. The reason
+    existed only in the response body the *gateway* received.
+  * The same file argues with itself: its regex comment allows `[-+]?`, its
+    OpenAPI description promises "an optional leading `-` for negative
+    numbers", and its validator is `. abs`. Three parts expect a sign; only the
+    parser, which is the part that runs, cannot read one.
+  * Six healthy things were checked first — both geofences, a dead subscriber
+    on :8000, the proxies, the fleet's freshness and the fare policy.
+
+Patched in `apply-patches.py` as a seventh site. `beckn-spec` is shared, so one
+site fixes the rider and the provider together.
+
+**When a component reports no error, read what its caller received.**
+
+### The test fleet
+
+`./seed-mauritanian-fleet.sh` — two drivers per sellable variant in Nouakchott,
+Mauritanian names and plates, all enrolled in the guard. Two per type because
+one means a whole category dies the moment that driver takes a ride, and
+because the offers screen is never exercised as designed with one.
+
+The three things that make a seeded driver invisible, none of which produces an
+error, are documented at the top of that script: the `point` column rather than
+lat/lon, `coordinates_calculated_at` freshness, and a spread wider than the
+search radius.
+
+### Proven end to end, 2026-09-03
+
+A `+222` number, eight digits, searching Tevragh Zeina → Ksar:
+
+    AUTO_RICKSHAW     84-119 MRU     2 cars nearby
+    HATCHBACK         84-119 MRU     2 cars nearby
+    SEDAN            123-158 MRU     2 cars nearby
+    SUV              167-202 MRU     2 cars nearby
+
 ## Gotchas
 
 **Use `/swagger`, not `/swagger/`.** With a trailing slash the page's relative

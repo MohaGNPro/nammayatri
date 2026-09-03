@@ -141,7 +141,7 @@ Types: feat, fix, chore, ci, docs, perf, refactor, test
 
 ---
 
-# This fork: Movin DZ (Algeria)
+# This fork: Movin (Mauritania since 2026-09-03, Algeria before that)
 
 Everything above is upstream Namma Yatri and still applies to the Haskell
 services. This section is what is different here, and it is mostly about what
@@ -157,7 +157,7 @@ Three services were replaced so the stack needs no Google account and no bill:
 
 | Upstream | Here |
 |---|---|
-| Google Directions | **OSRM**, our own, on the Algeria OSM extract |
+| Google Directions | **OSRM**, our own, on the country OSM extract |
 | Google Maps tiles | **tileserver-gl**, same extract |
 | Google Places / geocoding | **`maps-shim`**, answering from a Postgres place index |
 
@@ -213,15 +213,31 @@ binaries in `bin/` settles anything else. Reading the tree instead has already
 produced one confident, wrong conclusion — that a driver app required deploying
 another service first. See the driver API section of the local-stack README.
 
-## Algeria-specific data
+## Country-specific data
 
-- Service area is the **national border**, in `algeria-geofences.sql`. Note
-  that `serviceable: true` therefore means "inside Algeria", not "a car will
-  come" — Tamanrasset is serviceable and 1,900 km from any driver.
-- Phone numbers are `+213`, and the server wants the **trunk zero**
-  (`0550123456`); the international form is rejected.
-- The place index is built by `./geocoder-prepare.sh` from the same
-  `algeria-latest.osm.pbf` that feeds OSRM and the tiles.
+**The pilot moved from Algeria to Mauritania on 2026-09-03, replacing it.** The
+Algerian data is all still on the box and in git; going back is a variable and
+an image swap, not a rebuild. Everything below is Mauritanian now.
+
+- The map stack takes a country: `COUNTRY=mauritania ./osrm-prepare.sh`, same
+  for `tiles-prepare.sh` and `geocoder-prepare.sh`, and `MAP_COUNTRY` in the
+  compose. All default to `algeria`, so an unqualified run still builds what it
+  always built.
+- **There are TWO service areas, not one.** `atlas_app.geometry` +
+  `atlas_app.merchant.origin_restriction` for the rider, and
+  `atlas_driver_offer_bpp.geometry` + its own two merchants for the provider.
+  Switching only the rider's leaves searches reaching the BPP and being dropped
+  there, with no error and no estimate. `mauritania-geofences.sql`.
+- `serviceable: true` means "inside the country", not "a car will come" — the
+  Majabat al-Koubra is serviceable and several hundred km from any driver.
+- Phone numbers are `+222` and **eight digits with no trunk prefix**. Mobiles
+  start 2, 3 or 4 and the second digit is never 5 (`x5` is fixed-line). This is
+  the exact inverse of Algeria, where 5/6/7 were mobile and 2/3/4 were
+  landlines, and where the server demanded a trunk zero.
+- The tariff is `mauritania-tariff.sql`, converted from the Algerian one at
+  1 DZD = 0.30 MRU as a **placeholder** until the client sets real prices.
+- A test fleet lives in `./seed-mauritanian-fleet.sh` — two drivers per
+  sellable variant, in Nouakchott.
 
 ## Backups
 
@@ -262,3 +278,22 @@ the header of that script.
 - **A lone connection timeout from the laptop is not a result** — but two in a
   row, while `ssh` to the same box still works, means the guard in front is
   rate-limiting you. Run the probe *on* the VPS instead of against it.
+- **BECKN could not parse a negative coordinate**, and had not been able to
+  since 2023. `Beckn/Types/Core/Taxi/Common/Gps.hs` read the gps string with
+  Parsec's `P.float`, which is unsigned, so every longitude west of Greenwich
+  failed. Algeria is at +3 and this was invisible for the whole pilot;
+  Nouakchott is at −15.9 and no search reached the driver pool. **The provider
+  logged nothing** — it answered the gateway 400, which from its side is
+  correct behaviour. The reason existed only in the response body the *gateway*
+  received. Patched now, but the shape of the lesson generalises: when a
+  component reports no error, read what its caller got back.
+- **Whatever you are grepping the logs for, parse them as JSON instead.** The
+  container log is one JSON object per line and the useful message is inside a
+  `"log"` field with escaped quotes. Three separate greps truncated the answer
+  above at the first `\"` before it was found.
+- **`npx prettier` is not part of the app project.** `package.json` has only
+  `expo lint` and there is no prettier config, so prettier runs with its own
+  defaults — double quotes, 80 columns — against a codebase written with single
+  quotes at 100. Running `--write` on two files rewrote 839 lines for a
+  two-line change. A tool absent from `package.json` is not this project's
+  standard.
