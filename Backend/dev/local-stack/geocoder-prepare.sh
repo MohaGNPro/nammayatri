@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build the place-search index from the Algeria OSM extract.
+# Build the place-search index from one country's OSM extract.
 #
 #   ./geocoder-prepare.sh            # everything: extract, load, functions
 #   ./geocoder-prepare.sh extract    # PBF -> geocoder/places.csv   (~4 min)
@@ -22,7 +22,15 @@ PG_CONTAINER=${PG_CONTAINER:-ny-postgres}
 PG_USER=${PG_USER:-postgres}
 PG_DB=${PG_DB:-atlas_dev}
 OSRM_VOLUME=${OSRM_VOLUME:-ny-osrm-data}
-PBF=${PBF:-algeria-latest.osm.pbf}
+# The country this stack serves. Everything below is derived from it, and it
+# defaults to Algeria so that an unqualified run builds exactly what it built
+# before. Mauritania: `COUNTRY=mauritania ./geocoder-prepare.sh`
+COUNTRY=${COUNTRY:-algeria}
+# Geofabrik files live under a continent. Wrong value, 404, and the error would
+# otherwise be a curl failure against a URL nobody printed.
+REGION=${REGION:-africa}
+# Still overridable directly, which is how it was written.
+PBF=${PBF:-$COUNTRY-latest.osm.pbf}
 DIR="$(pwd)/geocoder"
 CSV="$DIR/places.csv"
 

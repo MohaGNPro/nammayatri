@@ -25,8 +25,16 @@ cd "$(dirname "$0")"
 PLANETILER_IMAGE="ghcr.io/onthegomap/planetiler:latest"
 VOLUME="ny-tiles-data"
 OSM_VOLUME="ny-osrm-data"
-PBF="algeria-latest.osm.pbf"
-OUT="algeria.mbtiles"
+# The country this stack serves. Everything below is derived from it, and it
+# defaults to Algeria so that an unqualified run builds exactly what it built
+# before. Mauritania: `COUNTRY=mauritania ./tiles-prepare.sh`
+COUNTRY=${COUNTRY:-algeria}
+# Geofabrik files live under a continent. Wrong value, 404, and the error would
+# otherwise be a curl failure against a URL nobody printed.
+REGION=${REGION:-africa}
+
+PBF="$COUNTRY-latest.osm.pbf"
+OUT="$COUNTRY.mbtiles"
 # Planetiler writes progressively, so a half-finished file looks like a
 # finished one. Build under a different name and rename only on success.
 BUILD="build/$OUT"

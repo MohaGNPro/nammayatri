@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the OSRM routing graph for Algeria.
+# Build the OSRM routing graph for one country -- Algeria by default.
 #
 #   ./osrm-prepare.sh          build it (skips if already built)
 #   ./osrm-prepare.sh rebuild  force a rebuild, e.g. for fresher map data
@@ -19,10 +19,19 @@ cd "$(dirname "$0")"
 
 OSRM_IMAGE="ghcr.io/project-osrm/osrm-backend:latest"
 VOLUME="ny-osrm-data"
-# Geofabrik republishes daily. Algeria is ~285 MB.
-EXTRACT_URL="https://download.geofabrik.de/africa/algeria-latest.osm.pbf"
-PBF="algeria-latest.osm.pbf"
-BASE="algeria-latest"
+
+# The country this stack serves. Everything below is derived from it, and it
+# defaults to Algeria so that an unqualified run builds exactly what it built
+# before. Mauritania: `COUNTRY=mauritania ./osrm-prepare.sh`
+COUNTRY=${COUNTRY:-algeria}
+# Geofabrik files live under a continent. Wrong value, 404, and the error would
+# otherwise be a curl failure against a URL nobody printed.
+REGION=${REGION:-africa}
+
+# Geofabrik republishes daily. Algeria is ~285 MB, Mauritania ~29 MB.
+PBF="$COUNTRY-latest.osm.pbf"
+BASE="$COUNTRY-latest"
+EXTRACT_URL="https://download.geofabrik.de/$REGION/$PBF"
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 ok()  { printf '\033[1;32m    %s\033[0m\n' "$*"; }
@@ -57,7 +66,7 @@ ok "$OSRM_IMAGE"
 if in_vol alpine:latest test -f "/data/$PBF" 2>/dev/null; then
   ok "map extract already downloaded"
 else
-  log "Downloading Algeria map data (~285 MB)"
+  log "Downloading $COUNTRY map data"
   # -C - resumes a partial file, so a dropped connection costs only the
   # remainder rather than starting over.
   for attempt in 1 2 3 4 5 6 7 8; do
