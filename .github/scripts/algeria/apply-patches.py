@@ -132,18 +132,24 @@ PATCHES = [
     # it.
     #
     # beckn-spec is shared, so this one site fixes the rider and the provider
-    # together. `option` and `char` are already in scope from the unqualified
-    # `import Text.Parsec`.
+    # together. `char` and `<|>` are already in scope -- EulerHS.Prelude is
+    # imported `hiding (many, try, (<|>))` so that `<|>` is Parsec's.
+    #
+    # Written point-free with NO local bindings, and that is deliberate: the
+    # first attempt bound `value`, which shadows a lens from Data.OpenApi, and
+    # this project builds with -Werror=name-shadowing. An expression with no
+    # bindings cannot shadow anything. It also accepts a leading '+', which the
+    # file's own regex comment allows.
     (
         f"{BECKN_SPEC}/Common/Gps.hs",
         77,
         """double :: Parser Double
 double = P.float lexer""",
         """double :: Parser Double
-double = do
-  minus <- option False (char '-' >> pure True)
-  value <- P.float lexer
-  pure $ if minus then negate value else value""",
+double =
+  (negate <$> (char '-' *> P.float lexer))
+    <|> (char '+' *> P.float lexer)
+    <|> P.float lexer""",
         "beckn: a coordinate may be negative -- Nouakchott is at -15.9",
     ),
     # ── The car, on the driver's offer ──────────────────────────────────────
