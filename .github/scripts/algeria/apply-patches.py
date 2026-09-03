@@ -113,6 +113,39 @@ PATCHES = [
         'Person.findByMobileNumber "+222" mobileNumberHash',
         "driver: onboarding document lookup by phone",
     ),
+    # ── BECKN cannot parse a negative coordinate ────────────────────────────
+    #
+    # `P.float` is Parsec's UNSIGNED float. Every longitude west of Greenwich
+    # fails to parse, and the provider answers 400 without logging anything:
+    #
+    #     Error in $.message.intent.fulfillment.start.location.gps:
+    #     (line 1, column 10): unexpected "-" expecting space or float
+    #
+    # Algeria is at +3 so this was invisible for the whole pilot. Nouakchott is
+    # at -15.9 and no search reached the driver pool at all. Found 2026-09-03
+    # by reading the response body the gateway received, which is the only
+    # place the reason appears.
+    #
+    # The file's own regex comment allows `[-+]?`, its OpenAPI description
+    # promises "an optional leading - for negative numbers", and its validator
+    # is `. abs`. Three parts expect signed input and the parser cannot produce
+    # it.
+    #
+    # beckn-spec is shared, so this one site fixes the rider and the provider
+    # together. `option` and `char` are already in scope from the unqualified
+    # `import Text.Parsec`.
+    (
+        f"{BECKN_SPEC}/Common/Gps.hs",
+        77,
+        """double :: Parser Double
+double = P.float lexer""",
+        """double :: Parser Double
+double = do
+  minus <- option False (char '-' >> pure True)
+  value <- P.float lexer
+  pure $ if minus then negate value else value""",
+        "beckn: a coordinate may be negative -- Nouakchott is at -15.9",
+    ),
     # ── The car, on the driver's offer ──────────────────────────────────────
     #
     # The client asked, repeatedly, for the passenger to see which car is
