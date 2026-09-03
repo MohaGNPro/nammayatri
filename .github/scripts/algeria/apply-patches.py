@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apply the Algeria (+213) patches to a checkout of the Namma Yatri backend.
+Apply the Mauritania (+222) patches to a checkout of the Namma Yatri backend.
 
     ./apply-patches.py <source-root>
 
@@ -8,15 +8,21 @@ Apply the Algeria (+213) patches to a checkout of the Namma Yatri backend.
 checkout of nammayatri at the pinned 2023 baseline
 (03a753113af1fdcddf3378d9dc2fc31170e385e4).
 
-Upstream hard-codes the Indian dial code in five places. Every one of them
-rejects, or silently fails to find, an Algerian number. We replace +91 with
-+213 rather than accepting any country code: a permissive check would let
-anyone in the world trigger an OTP SMS, which is how SMS-pumping fraud works.
-Widening it later is a one-line change.
+Upstream hard-codes India in six places: the dial code in five, and the
+*length* of a phone number in a sixth. Every one of them rejects, or silently
+fails to find, a Mauritanian number.
+
+We replace them with +222 rather than accepting any country code: a permissive
+check would let anyone in the world trigger an OTP SMS, which is how
+SMS-pumping fraud works. Kleene's `\\/` is exported here and would allow
+`"+213" \\/ "+222"` if two countries were ever wanted -- the client chose one,
+on 2026-09-03, and said the Algerian test accounts can go.
+
+This file said +213 until 2026-09-03. The Algerian history is in git.
 
 The script is idempotent — running it twice is a no-op — and it fails loudly
 rather than silently skipping a site, because a missed patch produces a binary
-that looks fine and still rejects +213 at runtime.
+that looks fine and still rejects +222 at runtime.
 """
 
 import sys
@@ -45,39 +51,66 @@ DRIVER = f"{DRIVER_SRC}/Domain/Action"
 # P.Regex in the driver file. Getting this wrong is a compile error four hours
 # into the build. Neither site needs a new import.
 PATCHES = [
+    # ── How long a phone number is ──────────────────────────────────────────
+    #
+    # `P.mobileNumber` is `ExactLength 10 `And` star digit` in the pinned
+    # shared-kernel: India's length, and Algeria's numbers happen to be 10
+    # digits with the trunk zero, so nobody ever hit it. Mauritanian numbers
+    # are 8 and none of them get past this. Measured on the live server, not
+    # read: an 8-digit number answers 400 with
+    # `length(mobileNumber) == 10` before the country code is even considered.
+    #
+    # Replaced at the call site because the predicate lives in shared-kernel,
+    # which stack fetches at a pinned commit and this script cannot reach.
+    # Neither file needs a new import; the driver's already compiles the very
+    # same construction for the OTP field one line away.
+    (
+        f"{RIDER}/Registration.hs",
+        207,
+        'validateField "mobileNumber" mobileNumber P.mobileNumber',
+        'validateField "mobileNumber" mobileNumber (ExactLength 8 `And` star P.digit)',
+        "rider: 10 digits is India's, Mauritania's numbers are 8",
+    ),
+    (
+        f"{DRIVER}/UI/Registration.hs",
+        141,
+        'validateField "mobileNumber" mobileNumber P.mobileNumber',
+        'validateField "mobileNumber" mobileNumber (P.ExactLength 8 `P.And` P.star P.digit)',
+        "driver: same, qualified -- both predicate modules are aliased P here",
+    ),
     (
         f"{RIDER}/Registration.hs",
         81,
         'validateField "mobileCountryCode" mobileCountryCode P.mobileIndianCode',
-        'validateField "mobileCountryCode" mobileCountryCode ("+213" :: Regex)',
+        'validateField "mobileCountryCode" mobileCountryCode ("+222" :: Regex)',
         "rider: POST /v2/auth country-code validation",
     ),
     (
         f"{DRIVER}/UI/Registration.hs",
         76,
         'validateField "mobileCountryCode" mobileCountryCode P.mobileIndianCode',
-        'validateField "mobileCountryCode" mobileCountryCode ("+213" :: P.Regex)',
+        'validateField "mobileCountryCode" mobileCountryCode ("+222" :: P.Regex)',
         "driver: driver login country-code validation",
     ),
     (
         f"{DRIVER}/Dashboard/Driver.hs",
         301,
         'mobileIndianCode = "+91"',
-        'mobileIndianCode = "+213"',
+        'mobileIndianCode = "+222"',
         "driver: dashboard driver lookup default country code",
     ),
     (
         f"{DRIVER}/UI/Call.hs",
         61,
         'QPerson.findByMobileNumber "+91" mobileNumberHash',
-        'QPerson.findByMobileNumber "+213" mobileNumberHash',
+        'QPerson.findByMobileNumber "+222" mobileNumberHash',
         "driver: Exotel inbound-call driver lookup",
     ),
     (
         f"{DRIVER}/UI/DriverOnboarding/Image.hs",
         189,
         'Person.findByMobileNumber "+91" mobileNumberHash',
-        'Person.findByMobileNumber "+213" mobileNumberHash',
+        'Person.findByMobileNumber "+222" mobileNumberHash',
         "driver: onboarding document lookup by phone",
     ),
     # ── The car, on the driver's offer ──────────────────────────────────────
@@ -1141,7 +1174,7 @@ def main() -> int:
                  f"  looking for: {old}\n"
                  f"  This site moved or changed upstream. Re-check the patch "
                  f"list against the source ref before building — a build that "
-                 f"skips a site still rejects +213 at runtime.")
+                 f"skips a site still rejects +222 at runtime.")
         if n > 1:
             fail(f"{rel}: found {n} occurrences of the text to patch, "
                  f"expected exactly 1. Refusing to guess.")
@@ -1157,10 +1190,12 @@ def main() -> int:
         print(f"  + {rel}:{got_line}  {note}")
         applied += 1
 
-    print(f"\nAlgeria patches: {applied} applied, {already} already in place, "
+    print(f"\nMauritania patches: {applied} applied, {already} already in place, "
           f"{len(PATCHES)} total")
 
-    # Belt and braces: prove no +91 survives in the five patched files.
+    # Belt and braces: prove no +91 survives in the patched files.
+    # The `n != 1` check above already refuses to guess when a site
+    # appears twice, so a missed length patch cannot pass silently either.
     for rel, *_ in PATCHES:
         text = (root / rel).read_text(encoding="utf-8")
         for i, line in enumerate(text.splitlines(), 1):
