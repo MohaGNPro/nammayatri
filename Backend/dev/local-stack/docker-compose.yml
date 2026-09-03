@@ -282,7 +282,7 @@ services:
     image: ghcr.io/project-osrm/osrm-backend:latest
     container_name: ny-osrm
     network_mode: host
-    command: osrm-routed --algorithm mld --port 5000 /data/algeria-latest.osrm
+    command: osrm-routed --algorithm mld --port 5000 /data/${MAP_COUNTRY:-algeria}-latest.osrm
     volumes:
       - ny-osrm-data:/data:ro
     restart: unless-stopped
@@ -528,7 +528,7 @@ services:
     # demos and a release APK alike. Override TILES_PUBLIC_URL to point a local
     # stack back at itself.
     command: >-
-      --file /data/algeria.mbtiles
+      --file /data/${MAP_COUNTRY:-algeria}.mbtiles
       --port 8080
       --public_url ${TILES_PUBLIC_URL:-https://api.169-58-139-65.sslip.io/tiles/}
     ports:
