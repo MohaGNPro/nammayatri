@@ -2,8 +2,8 @@
 #
 # Produces four Linux x86-64 ELF binaries:
 #
-#   rider-app-exe                 patched: accepts +213 instead of +91
-#   dynamic-offer-driver-app-exe  patched: accepts +213 instead of +91
+#   rider-app-exe                 patched: accepts +222 instead of +91
+#   dynamic-offer-driver-app-exe  patched: accepts +222 instead of +91
 #   beckn-gateway-exe             not in the published Docker image
 #   mock-registry-exe             not in the published Docker image
 #
@@ -55,7 +55,7 @@ on:
         default: "03a753113af1fdcddf3378d9dc2fc31170e385e4"
         required: true
       apply_patches:
-        description: "Apply the Algeria +213 patches"
+        description: "Apply the Mauritania +222 patches"
         type: boolean
         default: true
       build_gateway:
@@ -63,7 +63,7 @@ on:
         type: boolean
         default: true
       build_allocator:
-        description: "Also build driver-offer-allocator (not needed for +213)"
+        description: "Also build driver-offer-allocator (not needed for +222)"
         type: boolean
         default: false
       jobs:
@@ -160,7 +160,7 @@ jobs:
             || { echo "FAILED: no Backend/stack.yaml at this ref — it is not the 2023 baseline"; exit 1; }
           echo "checked out $(git rev-parse HEAD)"
 
-      - name: Apply the Algeria +213 patches
+      - name: Apply the Mauritania +222 patches
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.apply_patches }}
         run: python3 .github/scripts/algeria/apply-patches.py "$SRC"
 
