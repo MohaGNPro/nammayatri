@@ -228,6 +228,20 @@ const SMS_BYPASS = new Set(
 );
 
 /**
+ * What an exempt number types instead of a code it never received.
+ *
+ * It cannot be the backend's own 7891. The app's input is six characters wide
+ * now, because Moorsyl's Verify codes are exactly six, so a four-character code
+ * can no longer be typed in full — an exempt number would be locked out by the
+ * very screen built to let it in. So the guard accepts this instead and
+ * substitutes the backend's fixed code exactly as it does for a real one.
+ *
+ * Six ones, because it should be impossible to mistake for a real code in a
+ * screenshot or a log.
+ */
+const SMS_BYPASS_CODE = process.env.SMS_BYPASS_CODE || '111111';
+
+/**
  * One GSM-7 segment, so one message and one charge. Accented characters are in
  * the GSM alphabet and would be safe; it is emoji and the like that silently
  * force UCS-2 and halve the room. There are none here.
@@ -710,11 +724,13 @@ async function handle(req, res) {
        after the upstream 200, so no code goes out for a session the backend
        declined to open. */
     if (authId && route.sms && SMS_BYPASS.has(number)) {
-      // Left without a code of our own, so verify forwards the body untouched
-      // and the backend's fixed code answers -- which is exactly what this
-      // number did yesterday. Logged every time: an exempt number should never
-      // be a surprise when reading why someone got in.
-      console.log(`[guard] ${route.name}: ${number} is exempt from SMS, fixed code stands`);
+      // Given the test code directly, so it travels the same path a real one
+      // does -- checked here, and the backend's fixed code substituted before
+      // forwarding. Logged every time: an exempt number should never be a
+      // surprise when reading why somebody got in.
+      const s = sessions.get(key(authId));
+      if (s) s.smsCode = SMS_BYPASS_CODE;
+      console.log(`[guard] ${route.name}: ${number} is exempt, test code accepted`);
     } else if (authId && route.sms) {
       const s = sessions.get(key(authId));
       const sent = await issueCode(route, s, number);
@@ -966,7 +982,7 @@ http.createServer((req, res) => {
   // Printed in full, on purpose. These numbers can be signed into by anyone who
   // knows the fixed code, and that should be impossible to forget about.
   if (SMS_BYPASS.size) {
-    console.warn(`auth-guard  ${SMS_BYPASS.size} number(s) EXEMPT from SMS, fixed code accepted: ` +
-      `${[...SMS_BYPASS].join(', ')}`);
+    console.warn(`auth-guard  ${SMS_BYPASS.size} number(s) EXEMPT from SMS, ` +
+      `code "${SMS_BYPASS_CODE}" accepted for: ${[...SMS_BYPASS].join(', ')}`);
   }
 });
