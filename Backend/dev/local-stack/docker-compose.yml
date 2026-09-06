@@ -377,6 +377,29 @@ services:
       # payment happens and we never hear about it.
       PUBLIC_URL: "${PUBLIC_URL:-}"
       SUBSCRIPTION_PRICE: "${SUBSCRIPTION_PRICE:-3000}"
+      # ── The wallet, which replaces all of the above ────────────────────
+      #
+      # 30 MRU a day, taken at the driver's first ride rather than bought in
+      # advance. The price is here and not in the code because the two places
+      # that need it -- the charge in wallet.js and the dispatch gate in
+      # restricted.js -- read this same variable, so they cannot disagree
+      # about what a day costs.
+      #
+      # MOOSYL_SECRET_KEY is NOT here: it is a payment key, and this file is in
+      # git. It arrives from /opt/ny/secrets/moosyl.env through env_file below.
+      # Without it the wallet reports `configured: false` and the screen says
+      # so, rather than forwarding a 404 from Moosyl that would read like the
+      # driver's problem.
+      MOOSYL_BASE: "${MOOSYL_BASE:-https://api.moosyl.com}"
+      WALLET_DAY_PRICE: "${WALLET_DAY_PRICE:-30}"
+      WALLET_MIN_TOPUP: "${WALLET_MIN_TOPUP:-30}"
+      WALLET_DAY_HOURS: "${WALLET_DAY_HOURS:-24}"
+    # The payment key, and only that. `required: false` so a checkout without
+    # the secret still starts -- it reports itself unconfigured, which is the
+    # honest failure; a missing file would otherwise stop the whole stack.
+    env_file:
+      - path: /opt/ny/secrets/moosyl.env
+        required: false
     volumes:
       - ./maps-shim:/app:ro
       - avatars:/data/avatars

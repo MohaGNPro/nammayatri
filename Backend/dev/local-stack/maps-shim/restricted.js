@@ -35,6 +35,10 @@ const net = require('net');
 
 /** 0 disables the cap entirely. */
 const RIDE_CAP = Number(process.env.SUBSCRIPTION_RIDE_CAP || 300);
+/** What one day costs, and therefore the credit needed to start one. Read from
+    the same environment variable `wallet.js` uses, so the gate and the charge
+    can never disagree about the price. */
+const DAY_PRICE = Number(process.env.WALLET_DAY_PRICE || 30);
 const EVERY_MS = Number(process.env.RESTRICTED_REFRESH_MS || 5 * 60 * 1000);
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
 const REDIS_PORT = Number(process.env.REDIS_PORT || 6379);
@@ -57,38 +61,49 @@ const KEY = 'dynamic-offer-driver-app:movin:restricted';
  * which is the free month given to the fleet already on the road -- it has no
  * payment behind it by design, and would otherwise get an unlimited cap.
  */
+/**
+ * ── The wallet rule, since 2026-09-06 ──────────────────────────────────────
+ * The monthly subscription is gone. A driver owes us nothing until he drives:
+ * 30 MRU comes off at his first ride of a day and covers the next 24 hours.
+ *
+ * **The rule is NOT "has an active day", and getting that wrong would be
+ * invisible.** The day only begins at the first ride, so a driver who has just
+ * topped up has no day yet — gating on one would deprioritise him out of ever
+ * getting the ride that would start it. He would watch a full wallet do
+ * nothing, and every number on his screen would look right.
+ *
+ * So: restricted when he has neither an active day nor the credit to open one.
+ * `wallet.balance` is a cache of the ledger, and it is the correct thing to
+ * read here — the ledger is the audit trail, not the hot path.
+ *
+ * A driver with no wallet row at all has never topped up, which is the same
+ * position as an empty one. The LEFT JOIN's NULLs are handled by `coalesce`
+ * rather than by a second arm, so there is one expression to get right.
+ *
+ * The ride cap survives unchanged. It counts completed rides inside the day he
+ * is currently paying for, falling back to the day's start.
+ */
 const SQL = `
-  WITH period AS (
-    SELECT s.driver_id,
-           s.paid_until,
-           coalesce(
-             (SELECT max(sp.covers_from)
-                FROM movin.subscription_payment sp
-               WHERE sp.driver_id = s.driver_id
-                 AND sp.applied_at IS NOT NULL
-                 AND sp.covers_until > now()),
-             s.created_at
-           ) AS started
-      FROM movin.subscription s
-  )
   SELECT p.id
     FROM atlas_driver_offer_bpp.person p
-    LEFT JOIN period pd ON pd.driver_id = p.id
+    LEFT JOIN movin.wallet w ON w.driver_id = p.id
    WHERE p.role = 'DRIVER'
      AND (
-       pd.paid_until IS NULL
-       OR pd.paid_until <= now()
-       OR ($1 > 0 AND (
+       (
+         coalesce(w.day_until, to_timestamp(0)) <= now()
+         AND coalesce(w.balance, 0) < $2
+       )
+       OR ($1 > 0 AND w.day_until > now() AND (
             SELECT count(*)
               FROM atlas_driver_offer_bpp.ride r
              WHERE r.driver_id = p.id
                AND r.status = 'COMPLETED'
-               AND r.created_at >= pd.started
+               AND r.created_at >= w.day_until - interval '24 hours'
           ) >= $1)
      )`;
 
 async function compute(pool) {
-  const q = await pool.query(SQL, [RIDE_CAP]);
+  const q = await pool.query(SQL, [RIDE_CAP, DAY_PRICE]);
   return q.rows.map((r) => r.id);
 }
 

@@ -24,6 +24,7 @@ const fleet = require('./fleet');
 const avatars = require('./avatars');
 const rating = require('./rating');
 const subscription = require('./subscription');
+const wallet = require('./wallet');
 const identity = require('./identity');
 const restricted = require('./restricted');
 const deletion = require('./deletion');
@@ -452,6 +453,37 @@ http.createServer((req, res) => {
   // No route here takes a driver id: `status`, `checkout`, `history` and
   // `receipt` all derive it from the token by asking the driver backend who it
   // belongs to, so one driver cannot read or buy against another's account.
+  /* ── The wallet ────────────────────────────────────────────────────────
+     30 MRU a day, taken at the driver's first ride. Replaces /subscription/,
+     which is left mounted below until the app stops calling it -- a driver on
+     an older build must not meet a 404 on the screen that takes his money.
+     See wallet.js. */
+  if (url.pathname.startsWith('/wallet/')) {
+    const [, , what, ...rest] = url.pathname.split('/');
+    const token = req.headers.token || '';
+
+    // Moosyl first: the only caller here that is not the app. Its body is
+    // never trusted -- it only says which top-up to go and read back.
+    if (what === 'webhook') {
+      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+      return wallet.webhook(pool, req, res);
+    }
+    // A browser lands here, not the app. HTML, and it claims no result.
+    if (what === 'done') return wallet.done(url.searchParams, res);
+
+    if (what === 'status' && req.method === 'GET') return wallet.status(pool, token, res);
+    if (what === 'history' && req.method === 'GET') return wallet.history(pool, token, res);
+    if (what === 'topup' && req.method === 'POST') {
+      return wallet.topup(pool, token, url.searchParams.get('amount'), res);
+    }
+    // The state of one, which our own tables cannot answer on their own: an
+    // abandoned checkout and a late webhook are the same `pending` row here.
+    if (what === 'topup' && req.method === 'GET') {
+      return wallet.topupState(pool, token, decodeURIComponent(rest.join('/')), res);
+    }
+    return send(res, 404, { error: 'no such wallet route' });
+  }
+
   if (url.pathname.startsWith('/subscription/')) {
     const [, , what, ...rest] = url.pathname.split('/');
     const token = req.headers.token || '';
@@ -608,6 +640,19 @@ http.createServer((req, res) => {
   // Who dispatch should skip. Published to Redis, where the driver binary
   // reads it -- see restricted.js for why the policy lives here and not there.
   restricted.start(pool);
+
+  /* Take the day off each driver's first ride.
+     Polled rather than pushed: the shim is not in the ride flow, and the app
+     must never be what triggers a charge -- a phone that is switched off would
+     then be a free day. It shares a database with the driver backend, so it
+     just looks at which rides have started. Runs before the restriction
+     refresh's own interval so a driver who has just been charged is reflected
+     in the pool within one cycle. See wallet.js. */
+  if (pool) {
+    const sweep = () => void wallet.chargeStartedRides(pool);
+    sweep();
+    setInterval(sweep, Number(process.env.WALLET_SWEEP_MS || 60 * 1000)).unref();
+  }
   console.log(
     `maps-shim on :${PORT}  ->  OSRM ${OSRM_URL}, mock-google ${MOCK_GOOGLE_URL}, ` +
     `search ${pool ? 'from geo.place' : 'OFF (no PG_URL)'}`,
