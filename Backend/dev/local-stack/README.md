@@ -945,8 +945,9 @@ And the code is not merely guessable, it is *fixed*: `useFakeSms = Some 7891`, s
 it stood, anyone who knew a driver's phone number owned his shift and his
 earnings.
 
-There is no SMS gateway to turn the fake one off with, so the guard supplies the
-missing half instead:
+Turning the fake one off is not the fix, because the gateway the binary would
+then look for is a dead port on 4343 and changing which gateway it calls is a
+rebuild. So the guard supplies the missing half in front instead:
 
 - **A number not enrolled is refused at `POST /ui/auth`**, before the backend
   hears about it, so no record is created for a stranger.
@@ -966,8 +967,13 @@ missing half instead:
 
 The code is printed once and stored hashed — it cannot be read back. That fits
 how the pilot onboards: the agency enrols a driver face to face and hands him the
-number. When a real gateway exists, the guard generates and sends a code per
-sign-in through the *same* substitution; only where the code comes from changes.
+number.
+
+**Since 2026-09-06 a code is also texted per sign-in** (see *The SMS gateway*
+below), through the same substitution — only where the code comes from changed,
+which is what this paragraph used to predict. The personal code still works
+alongside it, deliberately: it is the one credential that does not depend on a
+third party being up, and an outage at the gateway must not ground the fleet.
 
 Three things that bite:
 
@@ -978,8 +984,12 @@ Three things that bite:
   he is waiting for approval. Enabling him and attaching a vehicle are
   `/dashboard/` operations, and `/dashboard/` is not published.
 - **Six digits, not four.** The guard allows three attempts, so six digits makes
-  guessing pointless rather than merely slow — but the driver sign-in screen must
-  accept six where the passenger one accepts four. They are different screens.
+  guessing pointless rather than merely slow. The passenger screen accepted four
+  until 2026-09-06 and now accepts six as well, because Moorsyl's Verify codes
+  are exactly six characters — a four-character check is refused outright with
+  `too_small`. `CODE_LENGTH` in the app's `config.ts` and `codeDigits` on the
+  guard's routes must agree, or the symptom is a code that cannot be typed in
+  full, which on screen looks like the SMS itself was wrong.
 
 `auth-guard/driver-codes.json` is **not in git** and is in the backup set. Losing
 it means re-enrolling every driver.

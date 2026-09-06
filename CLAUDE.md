@@ -164,9 +164,16 @@ Three services were replaced so the stack needs no Google account and no bill:
 The trick that makes those possible is worth knowing before adding a fourth:
 **service endpoints are database config, not compiled in.** `Maps_Google` in
 `atlas_app.merchant_service_config` carries `"googleMapsUrl"`, and pointing it
-at `maps-shim` is the entire integration. The same is true of
-`Sms_MyValueFirst`, which is how OTP delivery can be replaced later without
-rebuilding anything.
+at `maps-shim` is the entire integration.
+
+`Sms_MyValueFirst` is the same shape and was the obvious place to put a real SMS
+gateway — but **that is not where it went**, and the reason generalises. The
+backend's `useFakeSms = Some 7891` short-circuits the whole SMS path, so
+repointing the config changes nothing until that setting goes, and it is in
+dhall, in the image. Instead `auth-guard` in front makes the code, sends it
+through Moorsyl, checks it, and substitutes 7891 before forwarding. The backend
+still believes in its fixed code and was never touched. **When a config knob sits
+behind a compiled-in switch, the config knob is not the integration point.**
 
 ## The rider app is NOT in this repository
 
