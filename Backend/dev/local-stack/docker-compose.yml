@@ -1,5 +1,26 @@
 # Self-hosted Namma Yatri rider backend (2023 baseline).
 #
+# ── NEVER scp THIS FILE OVER THE DEPLOYED ONE ───────────────────────────────
+#
+# The copy running at /opt/ny/local-stack/docker-compose.yml is a SUPERSET of
+# this one. It also carries the website's `admin-api` service and an `edge-web`
+# mount on `edge`, neither of which is in this repository -- they belong to the
+# movin-website repo and are added to the deployed file directly, because a
+# service compose does not know about is a service it deletes.
+#
+# Copying this file wholesale therefore removes the website's API from the
+# stack's definition. Done on 2026-09-06, and the only reason nothing broke is
+# that the container was never restarted: `docker compose up -d auth-guard`
+# printed
+#
+#     Found orphan containers (movin-admin-api) for this project
+#
+# and "orphan" is compose saying it no longer knows what that container is for.
+# One `--remove-orphans` after that and the website API is gone.
+#
+# So: change the deployed file IN PLACE, or re-add the missing blocks after
+# copying. Read that warning line if it ever appears -- it is not noise.
+#
 # Networking note: the dhall configs hardcode `localhost` for Postgres, Redis,
 # Kafka and passetto (only the *ports* are env-overridable). Rather than patch
 # the upstream configs, the services that rider-app talks to publish their ports

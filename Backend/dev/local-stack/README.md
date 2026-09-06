@@ -453,6 +453,17 @@ Three things that cost time here, all worth knowing:
   the old inode and serves stale config — while `nginx -t` passes and a reload
   reports success, because both are validating the config it still has. Use
   `scp` (which truncates in place), or recreate the container.
+- **`docker-compose.yml` is the one file you must never copy wholesale.** The
+  deployed copy is a *superset*: it also carries the website's `admin-api`
+  service and an `edge-web` mount, which live in the movin-website repo and are
+  added to `/opt/ny/local-stack/docker-compose.yml` directly. Copying this
+  repo's version over it deletes them from the definition — done on 2026-09-06,
+  and the only reason nothing broke is that the container was never restarted.
+  Compose does say so, in the line it is easiest to read past:
+  `Found orphan containers (movin-admin-api) for this project`. "Orphan" means
+  compose no longer knows what that container is for, and the next
+  `--remove-orphans` deletes it. Edit the deployed file in place, or re-add the
+  missing blocks after copying.
 - **`expires` generates a `Cache-Control` of its own**, and the tile server
   sends one too, so the naive block emitted the header three times and left the
   client to choose. One `add_header`, with `proxy_hide_header` for the
@@ -2761,6 +2772,74 @@ A `+222` number, eight digits, searching Tevragh Zeina → Ksar:
     SEDAN            123-158 MRU     2 cars nearby
     SUV              167-202 MRU     2 cars nearby
 
+## The SMS gateway — Moorsyl, since 2026-09-06
+
+Codes are real now. `7891` no longer signs anybody in from the internet.
+
+**It is not a backend integration, and the obvious place to put it was a trap.**
+`Sms_MyValueFirst` in `merchant_service_config` is the same shape as the
+`Maps_Google` row that `maps-shim` hijacks, so repointing it looks like the
+whole job. It is not: `useFakeSms = Some 7891` short-circuits the SMS path
+*before* that config is read, and that setting is in dhall, inside the image.
+Turning it off delivers nothing at all — the gateway it would then look for is a
+dead port on 4343. **When a config knob sits behind a compiled-in switch, the
+knob is not the integration point.**
+
+So `auth-guard` does it, in front, with no rebuild: it obtains a code, checks
+what the caller typed, and forwards `7891` upstream regardless. The backend
+still believes in its fixed code and has never been told otherwise.
+
+### Two products, and only one of them works on this account
+
+Measured 2026-09-06, and worth re-measuring rather than assuming, because it is
+the client's paperwork that changes it:
+
+| | |
+|---|---|
+| `POST /api/sms` | **403 `COMPLIANCE_REQUIRED`** |
+| `POST /api/verify/send` | 200, returns a `verificationId` |
+
+The 403 came back identically with `from` set to `"Movin"`, to `"moorsyl"`, and
+omitted entirely — so it is the *account* that is not cleared for branded
+sending, not the name. That distinction is the difference between changing one
+string and the client filling in forms, and it is why all three were tried.
+
+`SMS_MODE` selects between them. `verify` today: Moorsyl makes the code, sends
+it under its own registered sender, and checks it. `sms` is written and tested
+and one environment variable away — it sends our own French wording under
+"Movin", and is what to switch to the day compliance clears.
+
+### Things that will bite
+
+- **Codes are SIX characters in both modes.** Verify's check takes exactly six
+  (`too_small` otherwise), and `sms` mode matches it deliberately so the app is
+  built once and the switch is invisible to it. `CODE_LENGTH` in the app's
+  `config.ts` must agree with `codeDigits` on the guard's routes.
+- **`SMS_BYPASS` is not a convenience.** Moorsyl only delivers to real `+222`
+  mobiles, and everyone building this tests from Algeria with invented numbers.
+  Without the exemption list this change locks the team out of the product.
+  Eleven numbers send nothing and use `SMS_BYPASS_CODE` (`111111`). **Empty it
+  before the first real rider**, together with `TEST_OTP` in the app.
+- **The key is in `/opt/ny/secrets/moorsyl.env`**, mounted with `env_file:
+  required: false` so a checkout without it still starts — loudly warning, and
+  refusing rider sign-ins, which is the honest failure.
+- **You can test the key for free.** There is no balance or account endpoint —
+  the API has exactly five routes (`/sms`, `/sms/get`, `/verify/send`,
+  `/verify/check`, `/verify/get`). But validation runs *before* authentication,
+  and `POST /verify/check` on an invented id sends nothing: a good key gets
+  `404 "does not belong to this organization"`, a bad key `401`.
+- **The docs are JavaScript and fetch as an empty page**, but
+  `api.moorsyl.com/api-reference` carries the entire OpenAPI document inline,
+  HTML-escaped in an attribute. Unescape that rather than guessing at the API.
+- **`+222 25/35/45…` is the fixed-line range** and Moorsyl's regex accepts it.
+  That makes it the safe destination for a live test: valid to the API, no
+  handset behind it. It is how the send path was proven without texting a
+  stranger.
+
+**Never observed: delivery to a real handset.** Everyone on the build side has
+an Algerian number, and Moorsyl only delivers to `+222`. The chain is proven as
+far as the gateway accepting the message and no further.
+
 ## Gotchas
 
 **Use `/swagger`, not `/swagger/`.** With a trailing slash the page's relative
@@ -2941,8 +3020,9 @@ probe-driver-pickup.sql   reaching the passenger:  the ride OTP (four digits,
 
   services fronting the stack
 edge/                  nginx + TLS, the public face
-auth-guard/            the OTP lock, in front of both backends: brute-force limits
-                       on /v2/, and on /ui/ the per-driver code that retires 7891
+auth-guard/            the OTP lock, in front of both backends: brute-force limits,
+                       AND where the code comes from — it obtains one from Moorsyl,
+                       checks it, and substitutes the backend's fixed 7891
   driver-codes.json    salted hashes, gitignored, in the backup set
 maps-shim/             Google Places/geocoding, answered from Postgres —
                        and, because the backend can hold neither, the two
