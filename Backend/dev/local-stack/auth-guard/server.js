@@ -168,7 +168,34 @@ const MAX_BODY = Number(process.env.MAX_BODY || 8 * 1024 * 1024);
    arrives as an environment variable from /opt/ny/secrets/moorsyl.env.
    ──────────────────────────────────────────────────────────────────────────── */
 
+/**
+ * Which of Moorsyl's two products delivers the code.
+ *
+ *   'verify'  Moorsyl makes the code, sends it under its own sender and
+ *             template, and checks it for us. Codes are exactly 6 characters.
+ *   'sms'     We make the code and send it as plain SMS under our own sender
+ *             name, with our own French wording.
+ *
+ * `sms` is the one we want and it is written and tested, but on 2026-09-06 this
+ * account could not use it: POST /api/sms answers 403 COMPLIANCE_REQUIRED for
+ * every sender -- "Movin", "moorsyl", and none at all -- so it is the account
+ * that is not cleared, not the name. Measured, not inferred. /verify/send on
+ * the same key at the same moment answered 200.
+ *
+ * The likely reason is the one that applies to branded SMS everywhere: a sender
+ * ID has to be registered with the operators before it may be used, whereas
+ * Verify sends under Moorsyl's own already-registered sender. So this is a mode
+ * and not a rewrite -- when the client clears compliance, SMS_MODE=sms is the
+ * whole switch, and riders get the Movin-branded French message instead.
+ *
+ * Both modes use a 6-character code so that the app is built once and the
+ * switch is invisible to it.
+ */
+const SMS_MODE = (process.env.SMS_MODE || 'verify').toLowerCase();
+
 const SMS_URL = process.env.SMS_URL || 'https://api.moorsyl.com/api/sms';
+const VERIFY_SEND_URL = process.env.VERIFY_SEND_URL || 'https://api.moorsyl.com/api/verify/send';
+const VERIFY_CHECK_URL = process.env.VERIFY_CHECK_URL || 'https://api.moorsyl.com/api/verify/check';
 const SMS_KEY = process.env.MOORSYL_API_KEY || '';
 const SMS_SENDER = process.env.SMS_SENDER || 'Movin';
 const SMS_TIMEOUT_MS = Number(process.env.SMS_TIMEOUT_MS || 15000);
@@ -276,13 +303,95 @@ async function sendSms(number, code) {
   return { ok: true };
 }
 
-/** A new code for this session, sent. The code never leaves this process. */
+/** POST to Moorsyl and say what came back. Never logs the key. */
+async function moorsyl(url, payload) {
+  if (!SMS_KEY) {
+    lastSmsError = 'no API key configured';
+    console.error('[guard] MOORSYL_API_KEY is empty -- nothing can be sent');
+    return { reachable: false };
+  }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': SMS_KEY },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(SMS_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* keep the text for the log */ }
+    return { reachable: true, status: res.status, ok: res.ok, json, text };
+  } catch (err) {
+    lastSmsError = `${err.name}: ${err.message}`;
+    return { reachable: false };
+  }
+}
+
+/**
+ * Ask Moorsyl to send a code, in Verify mode.
+ *
+ * We never learn the code -- checking it is a second call. That is the trade
+ * for not needing a registered sender ID.
+ */
+async function verifySend(number) {
+  const r = await moorsyl(VERIFY_SEND_URL, { to: number });
+  if (!r.reachable) {
+    console.error(`[guard] verify to ${number} failed -- ${lastSmsError}`);
+    return { ok: false };
+  }
+  const id = r.json && r.json.verificationId;
+  if (!r.ok || !id) {
+    lastSmsError = `HTTP ${r.status} ${String(r.text).slice(0, 300)}`;
+    console.error(`[guard] verify to ${number} refused -- ${lastSmsError}`);
+    return { ok: false };
+  }
+  smsSent += 1;
+  console.log(`[guard] verify to ${number} accepted by the gateway`);
+  return { ok: true, verificationId: id };
+}
+
+/**
+ * Check a typed code against a verification.
+ *
+ * `reachable` is separated from `approved` on purpose. A wrong code and an
+ * outage at Moorsyl must not look the same: the first spends an attempt, the
+ * second must not, or a bad afternoon at the gateway silently locks people out
+ * of their accounts. A 400 here is the API rejecting the code's *shape*, which
+ * is a wrong code and nothing more.
+ */
+async function verifyCheck(verificationId, code) {
+  const r = await moorsyl(VERIFY_CHECK_URL, { verificationId, code });
+  if (!r.reachable || (r.status >= 500)) {
+    console.error(`[guard] verify check unavailable -- ${lastSmsError || `HTTP ${r.status}`}`);
+    return { reachable: false, approved: false };
+  }
+  return { reachable: true, approved: !!(r.json && r.json.status === 'approved') };
+}
+
+/**
+ * A new code for this session, sent.
+ *
+ * In `sms` mode the code lives in this process and nowhere else; in `verify`
+ * mode we hold only the id and Moorsyl holds the code. Either way the session
+ * is only marked as having one if the gateway actually took it -- a session
+ * carrying a code nobody received would also refuse the personal code, and lock
+ * a driver out of his own account.
+ */
 async function issueCode(route, s, number) {
+  if (SMS_MODE === 'verify') {
+    const sent = await verifySend(number);
+    if (sent.ok) {
+      s.verificationId = sent.verificationId;
+      s.smsCode = null;
+    }
+    return sent;
+  }
   const code = mkCode(route.codeDigits);
   const sent = await sendSms(number, code);
-  // Only on success. A session holding a code that nobody received would also
-  // refuse the personal code, and lock a driver out of his own account.
-  if (sent.ok) s.smsCode = code;
+  if (sent.ok) {
+    s.smsCode = code;
+    s.verificationId = null;
+  }
   return sent;
 }
 
@@ -305,10 +414,12 @@ const ROUTES = [
     // otherwise the code we texted would be forwarded to a backend that accepts
     // only 7891, and every correct code would come back refused.
     fixedOtp: process.env.RIDER_FIXED_OTP || '7891',
-    // What the app's input expects. CODE_LENGTH in the app's config.ts is
-    // { passenger: 4, driver: 6 }; a mismatch here is a code that cannot be
-    // typed in full, and it would look like the SMS was wrong.
-    codeDigits: 4,
+    // Six, matching CODE_LENGTH in the app's config.ts. It was four until
+    // 2026-09-06: Moorsyl's Verify takes a code of exactly six characters, and
+    // the `sms` mode uses six as well so that the app is built once and the
+    // mode switch is invisible to it. A mismatch here is a code that cannot be
+    // typed in full, and on screen that looks like the SMS was wrong.
+    codeDigits: 6,
     sms: true,
   },
   {
@@ -502,7 +613,10 @@ async function handle(req, res) {
       // without opening a shell. The key itself is only ever a boolean here.
       gateway: {
         configured: !!SMS_KEY,
-        sender: SMS_SENDER,
+        mode: SMS_MODE,
+        // Only meaningful in `sms` mode; in `verify` mode Moorsyl's own sender
+        // is used and this is ignored.
+        sender: SMS_MODE === 'sms' ? SMS_SENDER : null,
         sent: smsSent,
         lastError: lastSmsError,
         // Counted, not listed: enough to notice the exemption exists without
@@ -578,7 +692,15 @@ async function handle(req, res) {
         // the authId, so this is the guard's only chance to learn who it is for.
         if (authId) {
           sessions.set(key(authId),
-            { born: Date.now(), attempts: 0, resends: 0, lockedUntil: 0, number, smsCode: null });
+            {
+            born: Date.now(),
+            attempts: 0,
+            resends: 0,
+            lockedUntil: 0,
+            number,
+            smsCode: null,
+            verificationId: null,
+          });
         }
       } catch { /* not JSON we recognise; nothing to remember */ }
     }
@@ -676,7 +798,7 @@ async function handle(req, res) {
     // the fixed code the deployed binary was built with, which is how 7891
     // stops being a password anybody has: it becomes an internal detail
     // between this process and a backend that costs 45 minutes to change.
-    if (codes || s.smsCode) {
+    if (codes || s.smsCode || s.verificationId) {
       let given = null;
       let parsed = null;
       try {
@@ -691,7 +813,21 @@ async function handle(req, res) {
       const bySms = s.smsCode ? sameCode(given, s.smsCode) : false;
       const byPersonal = codes ? codeMatches(codes[s.number], s.number, given) : false;
 
-      if (!bySms && !byPersonal) return countWrong();
+      // Only asked when nothing local already opened the session: it is a
+      // network round trip, and in Verify mode Moorsyl counts the attempt at
+      // its end too. A driver who used his own code should not spend one.
+      let byVerify = false;
+      if (s.verificationId && !bySms && !byPersonal) {
+        const checked = await verifyCheck(s.verificationId, given);
+        if (!checked.reachable) {
+          // An outage is not a wrong code. Saying so costs the caller nothing
+          // and keeps a bad afternoon at the gateway from locking accounts.
+          return send(res, 502, refusal('SMS_CHECK_FAILED'));
+        }
+        byVerify = checked.approved;
+      }
+
+      if (!bySms && !byPersonal && !byVerify) return countWrong();
 
       parsed.otp = route.fixedOtp;
       outgoing = Buffer.from(JSON.stringify(parsed));
@@ -805,7 +941,9 @@ http.createServer((req, res) => {
   for (const r of ROUTES) {
     const n = r.codesFile ? Object.keys(loadCodes(r.codesFile)).length : null;
     const how = [
-      r.sms ? `${r.codeDigits}-digit code by SMS` : 'no SMS',
+      r.sms
+        ? `${r.codeDigits}-digit code via ${SMS_MODE === 'verify' ? 'Moorsyl Verify' : 'our own SMS'}`
+        : 'no SMS',
       n === null ? null : `${n} personal codes`,
     ].filter(Boolean).join(', ');
     console.log(`auth-guard  ${r.prefix} -> ${r.upstream}  (${how})`);
@@ -820,6 +958,8 @@ http.createServer((req, res) => {
   // than falling back to something -- there is nothing to fall back to.
   if (!SMS_KEY) {
     console.error('auth-guard  WARNING: no MOORSYL_API_KEY -- riders cannot sign in at all');
+  } else if (SMS_MODE === 'verify') {
+    console.log(`auth-guard  gateway ${VERIFY_SEND_URL} (Moorsyl Verify, its sender and template)`);
   } else {
     console.log(`auth-guard  gateway ${SMS_URL} as "${SMS_SENDER}"`);
   }

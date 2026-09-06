@@ -412,6 +412,21 @@ services:
       # Document photos arrive base64 in JSON; nginx has the matching limit.
       MAX_BODY: "8388608"
       # The SMS gateway. The key is NOT here -- see env_file below.
+      #
+      # Two products, and we are on the second one. Measured 2026-09-06 on this
+      # account: POST /api/sms answers 403 COMPLIANCE_REQUIRED for every sender
+      # -- "Movin", "moorsyl", and none at all -- so it is the account that is
+      # not cleared to send branded SMS, not the name. /verify/send on the same
+      # key at the same minute answered 200.
+      #
+      # So `verify` today: Moorsyl makes the code, sends it under its own
+      # already-registered sender, and checks it for us. When the client clears
+      # compliance, SMS_MODE=sms is the entire switch and riders get the
+      # Movin-branded French message instead. Both use a 6-character code, so
+      # the app is built once and the switch is invisible to it.
+      SMS_MODE: "verify"
+      VERIFY_SEND_URL: "https://api.moorsyl.com/api/verify/send"
+      VERIFY_CHECK_URL: "https://api.moorsyl.com/api/verify/check"
       SMS_URL: "https://api.moorsyl.com/api/sms"
       SMS_SENDER: "Movin"
       # Numbers that skip the gateway and keep the fixed code, because no
