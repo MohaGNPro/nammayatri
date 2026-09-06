@@ -17,8 +17,9 @@
 // The code is not merely guessable, it is *fixed*: `useFakeSms = Some 7891` in
 // dhall-configs/dev/, on the rider app and the driver app alike. Measured
 // against the driver app on 2026-08-18: 0000 refused, 1234 refused, 7891
-// accepted. There is no SMS gateway yet, so that setting cannot simply be
-// turned off -- without it no code is delivered at all and nobody signs in.
+// accepted. That setting is still there and is not going away: turning it off
+// means no code is delivered at all, because the gateway it would then look for
+// is a dead port, and changing which gateway the *binary* calls is a rebuild.
 //
 // A fixed code is survivable on the rider side of a pilot. On the driver side
 // it is not: publishing /ui/ with a code the whole internet knows means anyone
@@ -32,10 +33,27 @@
 // working from the internet, because the guard never forwards it. See
 // `driver-codes.json` and `enrol-driver.sh`.
 //
-// That is not a workaround waiting to be replaced -- it is the same shape the
-// real thing will have. When an SMS gateway exists, the guard generates a
-// random code, sends it, and substitutes exactly as it does now; only the
-// source of the code changes.
+// That was not a workaround waiting to be replaced -- it was the same shape the
+// real thing has. Since 2026-09-06 the guard also generates a random code per
+// sign-in and sends it through Moorsyl, and substitutes exactly as before; only
+// the source of the code changed, which is what this file predicted.
+//
+// ── So where does the code come from now ────────────────────────────────────
+// This process, and nowhere else. On a sign-in it makes a random code, texts
+// it, and remembers it against the authId. On verify it checks what was typed
+// and forwards 7891 upstream regardless. The backend therefore still believes
+// in its fixed code and has never been told otherwise -- 7891 is no longer a
+// password anybody holds, it is an internal detail between these two processes.
+//
+// Two consequences worth knowing before changing anything here:
+//
+//   • The code lives in memory. A restart of this container invalidates every
+//     sign-in in flight, and those riders start over. That is seconds, and it
+//     is the same trade the session counters already make.
+//   • The driver's personal code still works alongside the texted one. That is
+//     deliberate: the fleet must not be grounded by an outage at a third party
+//     or by an unpaid balance. `enrol-driver.sh` still governs who may sign in
+//     at all -- an unlisted number is refused before it costs an SMS.
 //
 // ── Why here and not in the backend ─────────────────────────────────────────
 // That is where it belongs: the `attempts` counter already exists in the
@@ -130,6 +148,145 @@ const UPSTREAM_TIMEOUT_MS = 20000;
 const MAX_BODY = Number(process.env.MAX_BODY || 8 * 1024 * 1024);
 
 /* ────────────────────────────────────────────────────────────────────────────
+   The gateway
+
+   Moorsyl, Mauritanian. `POST /api/sms`, an `x-api-key` header, a body of
+   { to, from, body }. Measured against the live API on 2026-09-06:
+
+     • Validation runs BEFORE authentication, so a 400 says nothing about
+       whether the key is good. Only a well-formed request ever reaches the key
+       check -- which is also why the probes that mapped this contract cost
+       nothing to run.
+     • `to` must match /^\+222[234]\d{7}$/: the country code, a mobile prefix,
+       then seven digits. That is the same rule the app enforces before it calls
+       us, so a number which got this far already fits.
+     • Success is `{ accepted: true, messageId }`, and `accepted` means queued,
+       not delivered. The only delivery signal is a webhook we do not consume,
+       so "sent" here always means "the gateway took it".
+
+   The key is never in git, never in the database and never in a log line. It
+   arrives as an environment variable from /opt/ny/secrets/moorsyl.env.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+const SMS_URL = process.env.SMS_URL || 'https://api.moorsyl.com/api/sms';
+const SMS_KEY = process.env.MOORSYL_API_KEY || '';
+const SMS_SENDER = process.env.SMS_SENDER || 'Movin';
+const SMS_TIMEOUT_MS = Number(process.env.SMS_TIMEOUT_MS || 15000);
+
+/** For /healthz. Never holds the key or a code. */
+let lastSmsError = null;
+let smsSent = 0;
+
+/**
+ * Numbers that skip the gateway entirely and keep the fixed code.
+ *
+ * Not a convenience -- without it this change locks the people building the app
+ * out of it. The gateway only accepts real Mauritanian mobiles, and everyone
+ * testing from Algeria signs in as an invented +222 number. Once every code is
+ * texted, an invented number gets a message that is delivered nowhere, and the
+ * sign-in fails with no way round it.
+ *
+ * So: a short, explicit list, in full international form
+ * (`SMS_BYPASS=+22222778899,+22222778800`). These numbers cost no credit, send
+ * nothing, and still verify with the fixed code exactly as every number did
+ * before today.
+ *
+ * It is a hole, and it is meant to be an obvious one. It is printed at startup
+ * and counted on /healthz so that nobody has to read this file to discover that
+ * some numbers are exempt. Empty it the day the pilot has real riders -- that
+ * is the same instruction TEST_OTP carries in the app, and they go together.
+ */
+const SMS_BYPASS = new Set(
+  (process.env.SMS_BYPASS || '').split(',').map((s) => s.trim()).filter(Boolean),
+);
+
+/**
+ * One GSM-7 segment, so one message and one charge. Accented characters are in
+ * the GSM alphabet and would be safe; it is emoji and the like that silently
+ * force UCS-2 and halve the room. There are none here.
+ */
+const smsText = (code) =>
+  `Movin : votre code est ${code}. Ne le communiquez a personne. ` +
+  'Il expire dans 10 minutes.';
+
+/**
+ * A code, uniformly at random.
+ *
+ * `Math.random()` is neither uniform after a modulo nor unpredictable, and this
+ * string is now the whole secret -- it is what 7891 used to be, except that it
+ * differs per session and nobody but the holder of the phone is told it.
+ * Leading zeros are kept: the app compares strings of a fixed length, and
+ * dropping them would quietly shrink the keyspace.
+ */
+function mkCode(digits) {
+  let out = '';
+  for (let i = 0; i < digits; i += 1) out += String(crypto.randomInt(0, 10));
+  return out;
+}
+
+/** Constant-time, so a wrong code leaks nothing through how long it took. */
+function sameCode(given, want) {
+  const a = Buffer.from(String(given));
+  const b = Buffer.from(String(want));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+async function sendSms(number, code) {
+  if (!SMS_KEY) {
+    lastSmsError = 'no API key configured';
+    console.error('[guard] sms: MOORSYL_API_KEY is empty -- nothing can be sent');
+    return { ok: false };
+  }
+
+  let res;
+  let text;
+  try {
+    res = await fetch(SMS_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': SMS_KEY },
+      body: JSON.stringify({ to: number, from: SMS_SENDER, body: smsText(code) }),
+      signal: AbortSignal.timeout(SMS_TIMEOUT_MS),
+    });
+    text = await res.text();
+  } catch (err) {
+    // A failure here is a rider watching a screen, so record which failure it
+    // was rather than a bare "could not send".
+    lastSmsError = `${err.name}: ${err.message}`;
+    console.error(`[guard] sms to ${number} failed -- ${lastSmsError}`);
+    return { ok: false };
+  }
+
+  // The gateway quotes parts of a request it rejects. Nothing that echoes our
+  // body reaches the log with the code still legible in it.
+  const safe = text.split(code).join('****').slice(0, 300);
+
+  let accepted = false;
+  try {
+    accepted = JSON.parse(text).accepted === true;
+  } catch { /* not JSON: not a success either, and `safe` says what it was */ }
+
+  if (!res.ok || !accepted) {
+    lastSmsError = `HTTP ${res.status} ${safe}`;
+    console.error(`[guard] sms to ${number} refused -- ${lastSmsError}`);
+    return { ok: false };
+  }
+
+  smsSent += 1;
+  console.log(`[guard] sms to ${number} accepted by the gateway`);
+  return { ok: true };
+}
+
+/** A new code for this session, sent. The code never leaves this process. */
+async function issueCode(route, s, number) {
+  const code = mkCode(route.codeDigits);
+  const sent = await sendSms(number, code);
+  // Only on success. A session holding a code that nobody received would also
+  // refuse the personal code, and lock a driver out of his own account.
+  if (sent.ok) s.smsCode = code;
+  return sent;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
    Routes
 
    The prefix decides the upstream and whether personal codes apply. Order
@@ -141,12 +298,18 @@ const ROUTES = [
     name: 'rider',
     prefix: '/v2/',
     upstream: RIDER_URL,
-    // No personal codes: the client and his testers sign in with the fixed code
-    // every day, and switching them to per-number codes mid-pilot would lock
-    // them out of their own app. The mechanism below is prefix-agnostic, so the
-    // day the rider side gets the same treatment it is one line here.
+    // No personal codes on this side: a rider is whoever holds the phone, and
+    // the SMS below is what proves it. There is no agency to issue him one.
     codesFile: null,
-    fixedOtp: null,
+    // Now that a code is really delivered, the rider side substitutes too --
+    // otherwise the code we texted would be forwarded to a backend that accepts
+    // only 7891, and every correct code would come back refused.
+    fixedOtp: process.env.RIDER_FIXED_OTP || '7891',
+    // What the app's input expects. CODE_LENGTH in the app's config.ts is
+    // { passenger: 4, driver: 6 }; a mismatch here is a code that cannot be
+    // typed in full, and it would look like the SMS was wrong.
+    codeDigits: 4,
+    sms: true,
   },
   {
     name: 'driver',
@@ -156,6 +319,12 @@ const ROUTES = [
     // What the backend accepts, and what the guard substitutes once it has
     // checked the driver's own code. Kept out of the log on purpose.
     fixedOtp: process.env.DRIVER_FIXED_OTP || '7891',
+    codeDigits: 6,
+    // Both work here, deliberately. The texted code is the way in; the personal
+    // code stays valid so that an outage at the gateway -- or an unpaid balance
+    // -- does not ground the fleet. It is no weaker than it was yesterday, and
+    // it is the only credential that does not depend on a third party being up.
+    sms: true,
   },
 ];
 
@@ -324,9 +493,22 @@ async function handle(req, res) {
         prefix: r.prefix,
         upstream: r.upstream,
         personalCodes: r.codesFile ? Object.keys(loadCodes(r.codesFile)).length : null,
+        sms: !!r.sms,
+        codeDigits: r.codeDigits,
       })),
       sessions: sessions.size,
       numbers: starts.size,
+      // Enough to tell "the gateway is down" from "the key was never mounted"
+      // without opening a shell. The key itself is only ever a boolean here.
+      gateway: {
+        configured: !!SMS_KEY,
+        sender: SMS_SENDER,
+        sent: smsSent,
+        lastError: lastSmsError,
+        // Counted, not listed: enough to notice the exemption exists without
+        // publishing which numbers can be signed into with a known code.
+        bypassNumbers: SMS_BYPASS.size,
+      },
     });
   }
 
@@ -385,9 +567,10 @@ async function handle(req, res) {
       return send(res, 502, refusal('UPSTREAM_UNAVAILABLE'));
     }
 
+    let authId = null;
     if (up.status === 200) {
       try {
-        const { authId } = JSON.parse(up.text);
+        ({ authId } = JSON.parse(up.text));
         // Recording the birth is what makes expiry possible at all -- the
         // backend never expires an auth id, so without this an abandoned
         // sign-in stays guessable indefinitely. Recording the number is what
@@ -395,9 +578,37 @@ async function handle(req, res) {
         // the authId, so this is the guard's only chance to learn who it is for.
         if (authId) {
           sessions.set(key(authId),
-            { born: Date.now(), attempts: 0, resends: 0, lockedUntil: 0, number });
+            { born: Date.now(), attempts: 0, resends: 0, lockedUntil: 0, number, smsCode: null });
         }
       } catch { /* not JSON we recognise; nothing to remember */ }
+    }
+
+    /* ── the code the caller will have to type ──────────────────────────────
+       Sent after the throttle, so a number being hammered costs no credit, and
+       after the upstream 200, so no code goes out for a session the backend
+       declined to open. */
+    if (authId && route.sms && SMS_BYPASS.has(number)) {
+      // Left without a code of our own, so verify forwards the body untouched
+      // and the backend's fixed code answers -- which is exactly what this
+      // number did yesterday. Logged every time: an exempt number should never
+      // be a surprise when reading why someone got in.
+      console.log(`[guard] ${route.name}: ${number} is exempt from SMS, fixed code stands`);
+    } else if (authId && route.sms) {
+      const s = sessions.get(key(authId));
+      const sent = await issueCode(route, s, number);
+      if (!sent.ok) {
+        if (route.codesFile) {
+          // The driver still has his permanent code, so this is a warning and
+          // not a refusal. Losing the gateway must not also ground the fleet.
+          console.warn(`[guard] ${route.name}: no SMS for ${number}, personal code still stands`);
+        } else {
+          // A rider has nothing else to sign in with. Saying so beats a screen
+          // that waits for a message which is not coming, and the session is
+          // dropped so the number is not left with a guessable open session.
+          sessions.delete(key(authId));
+          return send(res, 502, refusal('SMS_SEND_FAILED'));
+        }
+      }
     }
 
     res.writeHead(up.status, { 'content-type': up.type || 'application/json' });
@@ -421,7 +632,7 @@ async function handle(req, res) {
     // the personal code against, and forwarding anyway would hand the raw body
     // to a backend that accepts 7891 from anyone. The cost is that a guard
     // restart makes drivers mid-sign-in start over, which is ten seconds.
-    if (!known && codes) {
+    if (!known && (codes || route.sms)) {
       console.warn(`[guard] ${route.name}: unknown session ${id}`);
       return send(res, 400, refusal('INVALID_AUTH_DATA'));
     }
@@ -458,8 +669,14 @@ async function handle(req, res) {
 
     let outgoing = body;
 
-    // ── the personal code ──────────────────────────────────────────────────
-    if (codes) {
+    // ── the code ───────────────────────────────────────────────────────────
+    // Two things can open a session and either one is enough: the code texted
+    // for this session, and -- on the driver side -- the permanent code the
+    // agency issued. Neither is ever forwarded. What goes upstream is always
+    // the fixed code the deployed binary was built with, which is how 7891
+    // stops being a password anybody has: it becomes an internal detail
+    // between this process and a backend that costs 45 minutes to change.
+    if (codes || s.smsCode) {
       let given = null;
       let parsed = null;
       try {
@@ -469,16 +686,13 @@ async function handle(req, res) {
 
       if (given === null) return send(res, 400, refusal('INVALID_REQUEST'));
 
-      if (!codeMatches(codes[s.number], s.number, given)) {
-        // Never forwarded. This is what actually retires the fixed code: a
-        // caller who submits 7891 without knowing the driver's own code spends
-        // an attempt here and the backend never hears about it.
-        return countWrong();
-      }
+      // Both are evaluated -- no short-circuit -- so how long this takes does
+      // not say which of the two the caller got closer to.
+      const bySms = s.smsCode ? sameCode(given, s.smsCode) : false;
+      const byPersonal = codes ? codeMatches(codes[s.number], s.number, given) : false;
 
-      // Right code. Swap in what the backend is configured to accept. The
-      // driver's own code has now done its work and goes no further than this
-      // process.
+      if (!bySms && !byPersonal) return countWrong();
+
       parsed.otp = route.fixedOtp;
       outgoing = Buffer.from(JSON.stringify(parsed));
     }
@@ -514,6 +728,30 @@ async function handle(req, res) {
   if (resend && req.method === 'POST') {
     const id = decodeURIComponent(resend[1]);
     const s = sessions.get(key(id));
+
+    /* With a gateway, a resend is this process's job and not the backend's:
+       another code, sent, and the wrong-code count cleared -- that count
+       describes a code which no longer opens anything. The backend is never
+       asked. Its own resend answers 500 on this stack, there being no gateway
+       behind it, and that 500 is what made the button look broken. */
+    if (route.sms) {
+      if (!s || !s.number) return send(res, 400, refusal('INVALID_AUTH_DATA'));
+      if (s.resends >= MAX_RESENDS) {
+        console.warn(`[guard] ${route.name}: resend cap on ${id}`);
+        return send(res, 429, refusal('TOO_MANY_REQUESTS'),
+          { 'retry-after': String(Math.ceil(LOCK_MS / 1000)) });
+      }
+      const sent = await issueCode(route, s, s.number);
+      if (!sent.ok) return send(res, 502, refusal('SMS_SEND_FAILED'));
+      s.resends += 1;
+      s.attempts = 0;
+      s.lockedUntil = 0;
+      s.born = Date.now();
+      console.log(`[guard] ${route.name}: resent to ${s.number} (${s.resends}/${MAX_RESENDS})`);
+      // The shape the app reads back -- it takes the authId from the reply
+      // rather than assuming the one it sent.
+      return send(res, 200, { authId: id });
+    }
 
     if (codes) {
       console.log(`[guard] ${route.name}: resend refused, codes are permanent`);
@@ -566,8 +804,11 @@ http.createServer((req, res) => {
 }).listen(PORT, () => {
   for (const r of ROUTES) {
     const n = r.codesFile ? Object.keys(loadCodes(r.codesFile)).length : null;
-    console.log(`auth-guard  ${r.prefix} -> ${r.upstream}  ` +
-      (n === null ? '(fixed code, as the backend has it)' : `(${n} personal codes)`));
+    const how = [
+      r.sms ? `${r.codeDigits}-digit code by SMS` : 'no SMS',
+      n === null ? null : `${n} personal codes`,
+    ].filter(Boolean).join(', ');
+    console.log(`auth-guard  ${r.prefix} -> ${r.upstream}  (${how})`);
   }
   console.log(
     `auth-guard on :${PORT}  ` +
@@ -575,4 +816,17 @@ http.createServer((req, res) => {
     `${MAX_STARTS} sign-ins per number per ${START_WINDOW_MS / 60000} min, ` +
     `${MAX_RESENDS} resends, body ${Math.round(MAX_BODY / 1024)} kB`,
   );
+  // Loud, because without a key the rider side refuses every sign-in rather
+  // than falling back to something -- there is nothing to fall back to.
+  if (!SMS_KEY) {
+    console.error('auth-guard  WARNING: no MOORSYL_API_KEY -- riders cannot sign in at all');
+  } else {
+    console.log(`auth-guard  gateway ${SMS_URL} as "${SMS_SENDER}"`);
+  }
+  // Printed in full, on purpose. These numbers can be signed into by anyone who
+  // knows the fixed code, and that should be impossible to forget about.
+  if (SMS_BYPASS.size) {
+    console.warn(`auth-guard  ${SMS_BYPASS.size} number(s) EXEMPT from SMS, fixed code accepted: ` +
+      `${[...SMS_BYPASS].join(', ')}`);
+  }
 });

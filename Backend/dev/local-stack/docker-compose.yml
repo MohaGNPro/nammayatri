@@ -373,13 +373,18 @@ services:
   # edge sends the whole of /v2/ and /ui/ through it -- a guard you can route
   # around is not a guard.
   #
-  # On /ui/ it does one thing more. The backend's code is not merely guessable,
-  # it is fixed at 7891 for everyone, and there is no SMS gateway to turn that
-  # off with. So the guard keeps a personal code per approved driver, checks it
-  # here, and substitutes 7891 before forwarding -- the fixed code never works
-  # from the internet, and an unlisted number is refused before the backend can
-  # create a driver record for it. `./enrol-driver.sh` manages that list; the
-  # file it writes is a secret and is not in git.
+  # It is also where the OTP comes from. The backend's own code is fixed at 7891
+  # and changing that is a rebuild, so since 2026-09-06 the guard makes a random
+  # code per sign-in, sends it through Moorsyl, checks what the caller typed, and
+  # substitutes 7891 before forwarding. The backend still believes in its fixed
+  # code and never hears the real one.
+  #
+  # On /ui/ it does one thing more: a personal code per approved driver, which
+  # still works alongside the texted one so that an outage at the gateway does
+  # not ground the fleet, and an unlisted number is refused before the backend
+  # can create a driver record for it -- or before it costs an SMS.
+  # `./enrol-driver.sh` manages that list; the file it writes is a secret and is
+  # not in git.
   #
   # Belongs in the backend, where the counter already exists. It is here because
   # this stack runs prebuilt binaries from a CI job with a 350-minute budget,
@@ -400,11 +405,44 @@ services:
       # substitutes this once the driver's own code checks out. When a real
       # gateway replaces the fake one, this and DRIVER_CODES both go.
       DRIVER_FIXED_OTP: "7891"
+      RIDER_FIXED_OTP: "7891"
       MAX_ATTEMPTS: "3"
       AUTH_TTL_MS: "600000"
       LOCK_MS: "900000"
       # Document photos arrive base64 in JSON; nginx has the matching limit.
       MAX_BODY: "8388608"
+      # The SMS gateway. The key is NOT here -- see env_file below.
+      SMS_URL: "https://api.moorsyl.com/api/sms"
+      SMS_SENDER: "Movin"
+      # Numbers that skip the gateway and keep the fixed code, because no
+      # message could ever reach them: every one of these is invented.
+      #
+      #   22778899  the number every probe script in this directory signs in as
+      #   22000001-2, 22100001-8  the seeded test fleet, from
+      #                           seed-mauritanian-fleet.sh
+      #
+      # Without this the people building the app cannot sign in to it at all:
+      # Moorsyl only accepts real Mauritanian mobiles, and everyone testing from
+      # Algeria uses a made-up +222 number. A real driver enrolled later is
+      # deliberately NOT here -- he should get a real message.
+      #
+      # This list must be empty before the first real rider. It is the same
+      # instruction TEST_OTP carries in the app, and the two go together.
+      SMS_BYPASS: >-
+        +22222778899,
+        +22222000001,+22222000002,
+        +22222100001,+22222100002,+22222100003,+22222100004,
+        +22222100005,+22222100006,+22222100007,+22222100008
+    # MOORSYL_API_KEY, and only that. Kept out of this file because this file is
+    # in git: a key committed once is a key that has to be rotated, and rotating
+    # this one means asking the client to go back into the Moorsyl console.
+    #
+    # `required: false` so a checkout without the secret still starts -- it logs
+    # a loud warning and refuses rider sign-ins, which is the honest failure.
+    # Without it, a missing file makes the whole stack refuse to come up.
+    env_file:
+      - path: /opt/ny/secrets/moorsyl.env
+        required: false
     volumes:
       - ./auth-guard:/app:ro
     restart: unless-stopped
