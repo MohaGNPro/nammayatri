@@ -204,8 +204,13 @@ if code == 200:
               p.get("balance") == s.get("balance"),
               f"{p.get('balance')} vs {s.get('balance')}")
 
+        # `psql -tAc` on a DELETE ... RETURNING prints the returned row AND
+        # the "DELETE 1" status line, so the whole output never equals the id.
+        # Comparing them reported a failed cleanup while the row was in fact
+        # gone -- a false alarm on the one check whose job is to notice a
+        # phantom payment left sitting in a driver's own history.
         gone = psql("DELETE FROM movin.wallet_topup WHERE transaction_id = "
-                    f"'{tid}' RETURNING transaction_id")
+                    f"'{tid}' RETURNING transaction_id").splitlines()[0].strip()
         check("the test checkout is cleaned up", gone == tid, f"deleted {gone!r}")
 
         left = psql("SELECT count(*) FROM movin.wallet_entry WHERE topup_id = "
