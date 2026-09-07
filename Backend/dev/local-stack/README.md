@@ -2241,10 +2241,21 @@ python3 probe-shortlist.py   # two searches, one shortlisted; reads who was
 Measured 2026-08-23 against the live stack: control asked 4 drivers, a
 shortlist of one asked exactly that one.
 
-## Driver subscriptions — `driver-subscription.sql`, `maps-shim/subscription.js`
+## Driver subscriptions — SUPERSEDED 2026-09-07
+
+> **This model is gone.** It was replaced by the wallet in the next section: a
+> driver loads credit and 30 MRU comes off at his first ride of a day. Nothing
+> here runs any more — `movin.subscription`, `movin.subscription_payment` and
+> `movin.driver_subscription_state` receive no writes, and the app has no screen
+> that reads them.
+>
+> Kept rather than deleted for two reasons. The tables still hold real Algerian
+> payments, which are accounting records. And the *reasoning* below is the only
+> written record of why an Algerian gateway forced pay-then-extend on us — worth
+> having the day somebody proposes automatic billing again.
 
 Passengers pay drivers in **cash** and the app never touches that money. Drivers
-pay **us** 3 000 DA a month, by CIB or Edahabia, through **Chargily Pay v2**. No
+paid **us** 3 000 DA a month, by CIB or Edahabia, through **Chargily Pay v2**. No
 CCP (*"cannot be automated, no API"*), no cash.
 
 Three defaults the client approved on 2026-08-26, each of them a line of config
@@ -2480,6 +2491,122 @@ with a real certificate, which is all a webhook needs. **Live Mode** needs
 account verification, whose document list Chargily does not publish, and
 realistically a domain we own: the current hostname contains the VPS's own IP
 address, so it dies the day the box moves.
+
+## The driver wallet — `driver-wallet.sql`, `maps-shim/wallet.js`
+
+**30 MRU a day, taken at his first ride.** The client's model, 2026-09-06, and
+it replaces the subscription entirely.
+
+A driver loads credit — never less than 30 MRU, as much above as he likes — and
+**nothing is taken until he works**. At his first ride of a day 30 MRU comes off
+and he is covered for 24 hours; every ride inside that window is free.
+
+That removes more than it adds. Nobody is ever charged without driving, so the
+whole pay-then-extend apparatus Algerian cards forced on the subscription has
+nothing left to guard. Moosyl *does* have a subscriptions API with automatic
+billing, and needing none of it is the safer half.
+
+Two rules the client confirmed, both about someone's money:
+
+| | |
+|---|---|
+| The 30 comes off when a ride **starts**, not when it is accepted | a driver who accepted a ride the passenger then cancelled drove nothing |
+| A driver who starts a ride under 30 **goes negative** rather than being cut off | the dispatch restriction is soft, so this case is reachable, and the answer cannot be "the app stops working while there is a passenger in the car" |
+
+### The obvious condition was wrong, and the data said so
+
+The first version charged rides in state `INPROGRESS`. A ride that starts and
+finishes between two sweeps is **never seen in that state**, so every short ride
+would have been free and nobody would have known until an audit. The honest
+marker is `trip_start_time`, and the 88 rides in the database prove it:
+
+| status | rides | with a start time |
+|---|---|---|
+| COMPLETED | 58 | 58 |
+| CANCELLED | 30 | **1** |
+
+The 29 cancelled before pickup have none — never charged, exactly the client's
+rule. The one cancelled *after* starting has one: that driver drove.
+
+### The dispatch gate is NOT "has an active day"
+
+The day only begins at the first ride, so gating on it would stop a driver who
+has just topped up from ever getting the ride that starts it — he would watch a
+full wallet do nothing, with every figure on screen correct. The rule is
+**`day_until > now() OR balance >= PRICE`**, in `restricted.js`, and the app is
+forbidden from recomputing it: `GET /wallet/status` returns `canWork` and the
+screens use that. Two opinions about it is a man told he is fine while the pool
+skips him.
+
+### The Moosyl contract, measured rather than read
+
+Their published OpenAPI is wrong about the two things this needs. Both were
+established by calling the API on 2026-09-06:
+
+- `POST /checkout-session` returns **`checkoutUrl` at the top level**, outside
+  `data`. The schema documents only `data`, so it looks absent.
+- **The status lives on the checkout session, not the payment request.** Nothing
+  in the payment-request family carries one, `refresh-status` included. The
+  session's is `open | completed | expired | cancelled`.
+
+Auth is `Authorization: <raw key>`. `Bearer` is refused, and a wrong key answers
+`404 Invalid API key` rather than 401. `GET /configuration` is the free key
+test — it authenticates and reports the environment without moving anything.
+
+### Why a webhook can never grant credit
+
+Moosyl documents **no webhook signature scheme anywhere**. So the webhook here
+is only a *hint to go and look*: it reads the session status back from Moosyl
+with our own key and credits from that. An unsigned POST from anyone on the
+internet therefore cannot put money in a wallet — a stronger property than
+verifying a signature we would have had to guess. Proven: a forged `completed`
+webhook returned 200 and created zero entries.
+
+### The ledger is the truth, the balance is a cache
+
+`wallet_entry.amount` is signed — a top-up positive, a day negative — and
+`wallet.balance` is `sum(amount)`. `movin.wallet_check` reports any drift
+between the two. **Revenue is the sum of the `day` entries**, not of the
+top-ups: a top-up is money taken and not yet earned, and confusing the two
+would report the fleet's unspent credit as income.
+
+Invoice numbers are drawn from `movin.invoice_seq` at the moment a payment is
+*applied*, never when a page is opened, so an abandoned checkout burns none and
+the series has no holes.
+
+### Routes
+
+`GET /wallet/status` · `GET /wallet/history` · `POST /wallet/topup?amount=N` ·
+`GET /wallet/topup/{id}` · `GET /wallet/done` · `POST /wallet/webhook`
+
+⚠ **They are 404 from every phone until the edge has a `location /wallet/`.**
+See the gotcha below — this cost an hour on 2026-09-07 with the server perfectly
+healthy on `127.0.0.1:8030`.
+
+### Proving it — `probe-wallet-screens.py`
+
+Run it **on the VPS**. It asserts the field names and types the app parses,
+against the deployed server, with a real driver's token — because `wallet.js`
+and `lib/wallet.ts` were written against each other, and two files written in
+one sitting agree about a typo as readily as about a contract.
+
+The check worth the most is `canWork == dayActive OR balance >= dayPrice`. It
+also catches the failure JavaScript hides: a missing field is not a crash, it is
+a silent zero, which is how a driver holding 300 MRU is shown an empty wallet.
+
+It opens one real checkout and deletes the row afterwards; left behind it would
+sit in that driver's own history as a payment he never started. 33 checks,
+all passing as of 2026-09-07.
+
+### The key is TEST mode
+
+`GET /configuration` lists the methods with `isTestingMode`. On the key given
+2026-09-06 all five — bankily, masrivi, sedad, bim_bank, bci_pay — are
+**TESTING**, so it moves no real money. That is what made it safe to build the
+whole thing before the production key arrived. The secret lives at
+`/opt/ny/secrets/moosyl.env` (root, 600) and **never in git**.
+
+---
 
 ## Account deletion — `account-deletion.sql`, `maps-shim/deletion.js`
 
@@ -2841,6 +2968,26 @@ an Algerian number, and Moorsyl only delivers to `+222`. The chain is proven as
 far as the gateway accepting the message and no further.
 
 ## Gotchas
+
+**A new `maps-shim` route is unreachable until the edge has a `location` for
+it.** The shim listens on `127.0.0.1:8030` and is published nowhere; the only
+way in from outside the box is an explicit block in
+`/opt/ny/local-stack/edge/nginx.conf`. Without one the route answers
+**correctly on 8030 and 404 from every phone**, which reads as a broken app
+rather than as missing routing. The whole wallet server shipped that way on
+2026-09-07 and was found by a probe calling the *public* host — one calling
+`127.0.0.1:8030` would have passed and proved nothing.
+
+**The repo's `edge/nginx.conf` is 11 KB behind the deployed one.** The website
+session's admin-console and movinapp.net blocks only ever existed on the box.
+Copying the repo version over would delete the admin console's routing. **Edit
+the deployed file in place and insert the same block into the repo copy
+separately.**
+
+**After `nginx -s reload`, the first request can still hit the old config.** A
+verification loop run immediately reported one 404 while the three paths after
+it passed. A race, not a fault — do not diagnose a reload from its first
+response.
 
 **Use `/swagger`, not `/swagger/`.** With a trailing slash the page's relative
 asset paths resolve to `/swagger/swagger-ui.css` and 404, leaving a blank page.
