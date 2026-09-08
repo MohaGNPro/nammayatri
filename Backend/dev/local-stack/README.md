@@ -646,7 +646,7 @@ Re-measured 2026-08-24, on both merchants, all four variants:
 |---|---|---|---|---|---|
 | Voiture | `SEDAN` | 150 | 45 | 70 | 300 |
 | Scooter | `AUTO_RICKSHAW` | 100 | 35 | 50 | 300 |
-| **Herbin** | `HATCHBACK` | **100** | **35** | **50** | 300 |
+| **Waw** | `HATCHBACK` | **100** | **35** | **50** | 300 |
 | Fourgon | `SUV` | 200 | 60 | 100 | 300 |
 
 Set by the client on 2026-08-13, replacing the upstream Bangalore seed (10 / 12
@@ -657,11 +657,11 @@ Set by the client on 2026-08-13, replacing the upstream Bangalore seed (10 / 12
 The client replaced *Economy / Comfort / Premium* with four physical vehicle
 types on 2026-08-21, and two of the four carry goods rather than people. The
 enum is a compiled Haskell type with exactly four members, so each of ours is
-pinned to one existing slot and the mapping is arbitrary — `HERBIN → HATCHBACK`
+pinned to one existing slot and the mapping is arbitrary — `WAW → HATCHBACK`
 says nothing about hatchbacks. `Frontend`'s `lib/vehicle.ts` is the one place
 that mapping lives. Renaming the enum properly is a rebuild.
 
-**A herbin is priced exactly like a scooter**, because it inherited the row that
+**A waw is priced exactly like a scooter**, because it inherited the row that
 used to be *Economy*. A flatbed pickup and a two-wheeler on the same tariff is
 not a decision anyone took; it is what the rename left behind. Raised with the
 client 2026-08-24, along with the table above so he can name an increase rather
@@ -813,7 +813,7 @@ the client's request:
 | | cost |
 |---|---|
 | Wider radius **for everyone** | edit the Dhall, restart — minutes, no rebuild |
-| Wider radius **for herbin and fourgon only** | **a backend rebuild**, ~45 min |
+| Wider radius **for waw and fourgon only** | **a backend rebuild**, ~45 min |
 
 **The display radius is wider than dispatch ever reaches.** `maps-shim/fleet.js`
 answers `/fleet/nearby` with `DEFAULT_RADIUS = 8000`, a kilometre past the
@@ -2528,7 +2528,7 @@ marker is `trip_start_time`, and the 88 rides in the database prove it:
 The 29 cancelled before pickup have none — never charged, exactly the client's
 rule. The one cancelled *after* starting has one: that driver drove.
 
-### The dispatch gate is NOT "has an active day"
+### The gate is NOT "has an active day"
 
 The day only begins at the first ride, so gating on it would stop a driver who
 has just topped up from ever getting the ride that starts it — he would watch a
@@ -2537,6 +2537,37 @@ full wallet do nothing, with every figure on screen correct. The rule is
 forbidden from recomputing it: `GET /wallet/status` returns `canWork` and the
 screens use that. Two opinions about it is a man told he is fine while the pool
 skips him.
+
+### It became a HARD block on 2026-09-07
+
+Asked whether an unpaid driver should be stopped or merely deprioritised, the
+client answered: *"Let's not allow him to go online."* So `canWork` no longer
+only orders the dispatch pool — **it decides whether he may go online at all.**
+
+Enforced in the app today, in `driver/duty.tsx`: the toggle re-reads
+`/wallet/status` and refuses. Two properties of that are deliberate.
+
+**Unreachable does not block.** A wallet we cannot read is our failure, not his,
+and it must never be the thing that stops a man working.
+
+**It re-reads rather than trusting what the screen loaded.** He has very likely
+just come back from the top-up screen, and refusing him over a figure fetched
+minutes ago would refuse him for a debt he has already settled — his money gone
+and the app still saying no.
+
+⚠ **The block is only in the app.** Its proper home is `auth-guard`, which
+already proxies `/ui/` and is where policy lives in this fork — refusing
+`POST /ui/driver/setActivity?active=true` when the wallet says no is about
+fifteen lines. Until that exists, a driver who installs an older APK is not
+stopped by anything.
+
+`restricted.js` is left in place. With the hard block the deprioritisation is
+mostly moot, but it costs nothing and covers the gap while the guard does not.
+
+**Undecided:** a driver online for more than 24 hours whose day expires while he
+is still connected, with less than the price of a day. Pushing someone offline
+mid-session is a product decision, not a technical one, and the client has not
+been asked. The app does nothing about it.
 
 ### The Moosyl contract, measured rather than read
 
