@@ -13,16 +13,22 @@
 --
 --   Voiture   SEDAN          45 start   15 /km   20 pickup
 --   Scooter   AUTO_RICKSHAW  30 start   10 /km   15 pickup
---   Herbin    HATCHBACK      30 start   10 /km   15 pickup
+--   Waw       HATCHBACK      30 start   10 /km   15 pickup
 --   Fourgon   SUV            60 start   20 /km   30 pickup
 --
 -- A 13.7 km Voiture works out at about 270 MRU, against 836 DZD in Algiers —
 -- the same trip, the same arithmetic, converted.
 --
--- **A herbin is still priced exactly like a scooter**, inherited from Algeria
--- where it took over the old Economy row. Nobody decided that, and it is one of
--- the two things outstanding with the boss — the other being whether "herbin"
--- means anything at all in Nouakchott.
+-- **A waw is still priced exactly like a scooter**, inherited from Algeria
+-- where it took over the old Economy row. Nobody decided that, and it is still
+-- outstanding with the boss.
+--
+-- The question beside it has been answered. It was whether "herbin" means
+-- anything in Nouakchott, and on 2026-09-08 the client said it does not: there
+-- are no herbins in Mauritania. The type is now the **waw**, the three-wheeled
+-- cargo motorcycle used there instead. Only the word changed — the variant is
+-- still HATCHBACK, which is a routing key and not a name, so no row here moved
+-- and no driver had to be re-enrolled.
 --
 -- ── Two things that are not the price ───────────────────────────────────────
 --
@@ -50,7 +56,7 @@ UPDATE atlas_driver_offer_bpp.fare_policy
        updated_at           = now()
  WHERE vehicle_variant = 'SEDAN';
 
--- ── Herbin ─────────────────────────────────────────────────────────────────
+-- ── Waw ────────────────────────────────────────────────────────────────────
 UPDATE atlas_driver_offer_bpp.fare_policy
    SET base_distance_fare   = 30,
        base_distance_meters = 0,
@@ -116,7 +122,7 @@ SELECT gen_random_uuid()::text, m.id, v.variant, b.from_m, b.cap
  CROSS JOIN (VALUES ('HATCHBACK'), ('SEDAN'), ('SUV'), ('AUTO_RICKSHAW'))
          AS v(variant)
  CROSS JOIN (VALUES
-        --  from      cap     50% of the Herbin fare at that distance
+        --  from      cap     50% of the Waw fare at that distance
         (     0,       25),   --       45
         (  2000,       35),   --       65
         (  4000,       45),   --       90
