@@ -559,9 +559,37 @@ three endpoints fall back to mock-google exactly as before.
 
 ### Arabic place names, and why they needed a fourth route
 
-`geo.place.name_ar` since 2026-09-10: **2,928 of 10,005 rows, 711 of the 942
-streets**. It was already in the data — `extract.py` collects `name:ar` into
-`alt_names` — so nothing was translated and nothing was invented.
+`geo.place.name_ar` since 2026-09-10: **3,324 of 10,005 rows — every street
+but three (939/942) and every transport stop (96/96)**.
+
+It came in three passes. **3,080 were already in the data**: `extract.py`
+collects `name:ar` into `alt_names`, so nothing there was translated or
+invented — 2,835 rows offered exactly one clean candidate, 152 more had theirs
+trapped inside a mixed-script string ("Centre de santé النقطة الصحية بأم لحياظ",
+where the LONGEST Arabic run is the name, because OSM holds some doubled and
+truncated), and 93 disagreed with themselves and went to a human.
+
+**The remaining 247 streets and stops had no Arabic in OSM at all** and were
+COMPOSED, not translated. Every token came from geo.place itself where possible
+— `Route Rosso - Boghé` is built from the روصو and بوغي already in the table,
+which also stops a town being spelled one way as a locality and another inside a
+road name — then from a table of the elements these names are built from (`Ould`
+appears 72 times in 247 rows, `Cheikh` 23, `Sidi` 14), then from a hand-written
+list of the 257 words neither covered.
+
+Those 257 are written as NAMES, not as letter sequences, and the difference is
+the whole point. A letter-substitution pass was written first and thrown away:
+it produced هابا for Haiba, whose name is هيبة, and لي for Ely. French
+romanisation is lossy exactly where Arabic distinguishes — `h` is ه or ح, `s` is
+س or ص, `t` is ت or ط — so rules cannot get there. Written by hand, `Melainine`
+is ماء العينين, `Hamahoullah` is حماه الله, `Med` is the administration's
+abbreviation of محمد, and French words are translated rather than transcribed:
+`Pêcheurs` is الصيادين.
+
+All 247 went to a reviewer pre-filled, each row labelled with where its
+proposal came from. Three are deliberately still empty: their edits read like a
+deletion that was never finished, and a half-typed name is worse than the
+French.
 
 Getting it *out* is the interesting part. **The rider app cannot tell the index
 which language it wants**, and this was measured against the deployed binary
