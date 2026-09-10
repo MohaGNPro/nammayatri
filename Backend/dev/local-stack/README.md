@@ -630,6 +630,39 @@ Three traps the filling exposed, all of which would have written wrong names:
   letters and match nothing typed on a keyboard. One reviewed answer came back
   in them. **NFKC anything that came from a human or from OSM.**
 
+### Typing Arabic found nothing, for as long as the index has existed
+
+`geo.normalise` — one function, applied to the stored text and to the rider's
+query so they cannot drift — read:
+
+    regexp_replace(lower(unaccent(t)), '[^a-z0-9]+', ' ', 'g')
+
+**Every Arabic character is outside `a-z0-9`**, so Arabic normalised to a string
+of spaces. `geo.normalise('شارع عبد الناصر')` returned `''`. It happened on the
+way in, when `search_norm` was built, and on the way out, to what the rider
+typed. Nothing errored; the screen showed no suggestions, which reads as "there
+is no such place".
+
+The column's own comment said *"Includes the Arabic names, so typing Arabic
+works even though we display French."* **It was never true.** A comment is not a
+test, and this one described an intention that the code four lines above it
+undid.
+
+Fixed in `geocoder/arabic-search.sql`, which does three things. The character
+class admits `ء-ي`. **Harakat and tatweel are stripped** — `الحلـــــه` is a real
+row, elongated with U+0640 for display, and would never have matched `الحله`.
+And **أ إ آ ٱ fold to ا, ى to ي, ة to ه** — our own index holds both أنواذيبو and
+انواذيبو for Nouadhibou, so without folding, typing one misses the other.
+
+It also rebuilds `search_norm`, for two reasons: the column is **stored**, so
+redefining the function changes nothing already on disk, and `name_ar` did not
+exist when the index was built, so the reviewed Arabic names were not in there
+at all. Reindex after, or Postgres keeps using entries built by the old
+definition of an `immutable` function.
+
+Measured after: `شارع` 363 rows, `نواكشوط` 53, `تفرغ` 3 — and through the rider
+API, 8 suggestions where there had been none.
+
 ⚠ `geocoder-prepare.sh` drops and rebuilds `geo.place`, and **`name_ar` does not
 survive that** until `extract.py` and `index.sql` carry `name:ar` in a column of
 their own. Not done, because it cannot be proved without a full rebuild.

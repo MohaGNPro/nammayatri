@@ -56,8 +56,19 @@ create table geo.place (
   lat           double precision not null,
   lon           double precision not null,
   geog          geography(Point, 4326) not null,
-  -- Everything searchable, normalised once at build time. Includes the Arabic
-  -- names, so typing Arabic works even though we display French.
+  -- Everything searchable, normalised once at build time: the display name,
+  -- the alt_names, and `name_ar`.
+  --
+  -- This comment used to say "Includes the Arabic names, so typing Arabic works
+  -- even though we display French." It was FALSE for as long as it stood.
+  -- `geo.normalise` squashed `[^a-z0-9]+` to a space, and every Arabic
+  -- character is outside `a-z0-9`, so the Arabic went in and was erased on the
+  -- way -- both here and on the rider's query. Typing Arabic matched nothing,
+  -- silently, and the screen read as "there is no such place".
+  --
+  -- Fixed 2026-09-10 in `arabic-search.sql`, which also folds hamza variants
+  -- and strips tatweel. A rebuilt index gets it from the function; an existing
+  -- one needs that file, because this column is stored.
   search_norm   text        not null,
   -- Just the shown name, normalised. Only used to group duplicates at query
   -- time -- but that runs per keystroke over a few thousand candidates, and
