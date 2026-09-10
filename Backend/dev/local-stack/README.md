@@ -557,6 +557,56 @@ needs a Postgres driver. The source stays a bind mount, so editing `server.js`
 and restarting the container is still the whole loop. Unset `PG_URL` and the
 three endpoints fall back to mock-google exactly as before.
 
+### Arabic place names, and why they needed a fourth route
+
+`geo.place.name_ar` since 2026-09-10: **2,928 of 10,005 rows, 711 of the 942
+streets**. It was already in the data — `extract.py` collects `name:ar` into
+`alt_names` — so nothing was translated and nothing was invented.
+
+Getting it *out* is the interesting part. **The rider app cannot tell the index
+which language it wants**, and this was measured against the deployed binary
+rather than read from the tree:
+
+| | |
+|---|---|
+| `language: "ARABIC"` | **400** — a five-value enum: `ENGLISH HINDI KANNADA TAMIL MALAYALAM` |
+| the Google client's parameters | `sessiontoken place components fields latlng geocode distancematrix alternatives directions autocomplete` |
+
+**There is no `language` in that table.** The backend accepts the field,
+validates it, and drops it — so hijacking an unused enum value (nobody in
+Mauritania will ever legitimately send `KANNADA`) fails on the second wall even
+though it clears the first. Adding it is a rebuild: 45 minutes, new binaries,
+and every measurement in this project re-proved against them, for a displayed
+name.
+
+So the app asks us directly, with the placeIds the backend just gave it:
+
+    GET /place/labels/json?lang=ar&ids=n1505634228,n3794447023
+
+    {"status":"OK","labels":{"n1505634228":"أكجوجت","n3794447023":"اوجفت"}}
+
+The edge exposes it as **`location = /place/labels/json`** — an exact match, not
+the `/place/` prefix. `autocomplete` and `details` answer the *backend* and stay
+404 from a phone; widening that location would publish the whole geocoder.
+Verified from the public host, because a probe against `127.0.0.1:8030` is
+exactly the check that passed while every phone got a 404 on the wallet.
+
+Three traps the filling exposed, all of which would have written wrong names:
+
+- **Two separators.** `|` is ours; `;` is OSM's own way of stuffing several
+  names into one tag. Rosso reads `القوارب;Roco;Rusu;Rosso`, and splitting on
+  `|` alone returns that entire string as one "Arabic name".
+- **A Latin letter means it is not the Arabic name.** Aleg's best candidate was
+  `Aleg ألاك`, a `name` tag carrying both scripts.
+- **Arabic presentation forms** (U+FB50–U+FEFF) render identically to ordinary
+  letters and match nothing typed on a keyboard. One reviewed answer came back
+  in them. **NFKC anything that came from a human or from OSM.**
+
+⚠ `geocoder-prepare.sh` drops and rebuilds `geo.place`, and **`name_ar` does not
+survive that** until `extract.py` and `index.sql` carry `name:ar` in a column of
+their own. Not done, because it cannot be proved without a full rebuild.
+`geocoder/arabic-names.sql` refills the deployed index without one.
+
 ### Limits worth knowing
 
 - **No house numbers.** Deliberate — see above.
