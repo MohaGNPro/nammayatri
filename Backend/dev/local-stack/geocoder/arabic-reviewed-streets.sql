@@ -9,7 +9,14 @@
 -- العينين, which no transliteration reaches.
 --
 -- Reviewed on a page that arrived pre-filled, so an untouched row is an
--- accepted row. Five were corrected; three are deliberately NOT here.
+-- accepted row. Five were corrected -- تعشوت for the composed تاشوط among them.
+--
+-- THREE ARE DELIBERATELY NOT HERE, and stay that way: Bassikonou-Aghor twice
+-- and Carrefour 3 Poteaux. Their edits read like a deletion that was never
+-- finished -- half a two-town road name, with the leading space still on it --
+-- and asked about it the reviewer said to leave the French. So they show what
+-- the other 6,681 unnamed places show, which is readable and true. A half-typed
+-- name would have been neither.
 
 begin;
 update geo.place set name_ar = 'كوكي - دييما' where id = 3332;  -- Gogui - Diéma
