@@ -224,6 +224,12 @@ const typesFor = (kind) => GOOGLE_TYPES[kind] || ['point_of_interest', 'establis
 // The app strips this off the end of a display line before showing it
 // (`locality()` in lib/places.ts), so the two have to agree -- a mismatch does
 // not error, it just leaves the country on screen.
+// The backend caps autocomplete at eight predictions, measured across every
+// query tried, so a phone has no honest reason to ask for more than a screenful
+// at once. The cap is here because this route is reachable from the internet
+// and `ids` is a caller-supplied list.
+const LABEL_LIMIT = Number(process.env.LABEL_LIMIT || 25);
+
 const COUNTRY_NAME = process.env.COUNTRY_NAME || 'Mauritanie';
 const COUNTRY_CODE = process.env.COUNTRY_CODE || 'MR';
 
@@ -285,6 +291,88 @@ async function autocomplete(query, res) {
       types: typesFor(row.kind),
     })),
   });
+}
+
+/**
+ * Arabic labels for places the phone already has.
+ *
+ * ── Why this route exists at all ────────────────────────────────────────────
+ * The obvious design is `language=ar` on autocomplete, and it cannot work. The
+ * chain is app -> rider-app -> here, and the deployed rider-app binary settles
+ * it twice over (checked 2026-09-10, not assumed):
+ *
+ *   1. `language` is a five-value enum -- ENGLISH HINDI KANNADA TAMIL MALAYALAM.
+ *      Sending ARABIC is refused with a 400 before anything reaches us.
+ *   2. Its Google client's whole query-parameter table is `sessiontoken place
+ *      components fields latlng geocode distancematrix alternatives directions
+ *      autocomplete`. There is no `language` in it. The backend validates the
+ *      field and then drops it, so even a hijacked enum value would never
+ *      arrive.
+ *
+ * Adding it means rebuilding the backend: 45 minutes, new binaries, and every
+ * measurement in this project re-proved against them. So the app asks us
+ * directly instead, with the place_ids the backend just handed it, and swaps
+ * the labels in. Reversible by deleting one nginx location.
+ *
+ * ── What it deliberately does not do ────────────────────────────────────────
+ * It never invents a name. A place with no `name_ar` is simply absent from the
+ * answer and the phone keeps the French, which is today's behaviour and is
+ * always readable. Half the country has no Arabic name in OSM and a
+ * transliteration produced here would be a guess presented as data.
+ *
+ * The locality is looked up by name because `geo.place.locality` is text, not a
+ * key -- it is filled from a display_name at index time. Where the locality has
+ * no Arabic name the French one stays, so a suggestion can read "شارع دبي,
+ * Nouadhibou". Mixed, and better than dropping the half that tells two
+ * identically-named streets apart.
+ */
+async function placeLabels(query, res) {
+  // One language for now. Answering an unknown one with an empty map rather
+  // than an error keeps a future third language from breaking this build.
+  const lang = (query.get('lang') || 'ar').toLowerCase();
+  const ids = (query.get('ids') || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, LABEL_LIMIT);
+
+  if (lang !== 'ar' || !ids.length) return send(res, 200, { status: 'OK', labels: {} });
+
+  let rows;
+  try {
+    ({ rows } = await pool.query(
+      `select p.place_id,
+              p.name_ar,
+              p.locality,
+              l.name_ar as locality_ar
+         from geo.place p
+         left join lateral (
+              select l2.name_ar
+                from geo.place l2
+               where l2.display_name = p.locality
+                 and l2.name_ar is not null
+               order by l2.importance desc
+               limit 1
+              ) l on true
+        where p.place_id = any($1)
+          and p.name_ar is not null`,
+      [ids],
+    ));
+  } catch (err) {
+    // Never an error to the phone. A label lookup that fails must cost the
+    // rider nothing more than seeing the French name he would have seen
+    // anyway.
+    console.error(`[labels] ${ids.length} ids: ${err.message}`);
+    return send(res, 200, { status: 'UNKNOWN_ERROR', labels: {} });
+  }
+
+  const labels = {};
+  for (const row of rows) {
+    const where = row.locality_ar || row.locality;
+    labels[row.place_id] = where ? `${row.name_ar}, ${where}` : row.name_ar;
+  }
+  console.log(`[labels] ${ids.length} asked -> ${rows.length} in ${lang}`);
+  send(res, 200, { status: 'OK', labels });
 }
 
 async function placeDetails(query, res) {
@@ -632,6 +720,10 @@ http.createServer((req, res) => {
   if (pool) {
     if (url.pathname === '/place/autocomplete/json') return autocomplete(url.searchParams, res);
     if (url.pathname === '/place/details/json') return placeDetails(url.searchParams, res);
+    // The only /place/ route the edge exposes publicly -- see the nginx
+    // location, which names this exact path rather than the /place/ prefix so
+    // autocomplete and details stay reachable only from the backend.
+    if (url.pathname === '/place/labels/json') return placeLabels(url.searchParams, res);
     if (url.pathname === '/geocode/json') return reverseGeocode(url.searchParams, res);
   }
 
